@@ -1007,7 +1007,6 @@ def worker(
             )
 
             # =================================================
-            # ONLY FIX:
             # اگر صفحه آخر خالی برگشت، جست‌وجو موفق تمام شود
             # و نتایج قبلی برای Word حفظ شوند.
             # =================================================
@@ -1162,6 +1161,28 @@ def worker(
 # WORD
 # =========================================================
 
+def clean_xml_text(text):
+    """
+    حذف فقط کاراکترهایی که XML/Word اجازه ذخیره آن‌ها را نمی‌دهد.
+    متن فارسی، اعداد، علائم نگارشی و محتوای رأی حفظ می‌شوند.
+    """
+
+    if text is None:
+        return ''
+
+    text = str(text)
+
+    return ''.join(
+        ch for ch in text
+        if (
+            ch in '\t\n\r'
+            or 0x20 <= ord(ch) <= 0xD7FF
+            or 0xE000 <= ord(ch) <= 0xFFFD
+            or 0x10000 <= ord(ch) <= 0x10FFFF
+        )
+    )
+
+
 def rtl(paragraph):
 
     paragraph.alignment = (
@@ -1206,22 +1227,28 @@ def make_doc(jid):
 
     rtl(
         doc.add_heading(
-            'آرای قضایی یافت‌شده',
+            clean_xml_text(
+                'آرای قضایی یافت‌شده'
+            ),
             0
         )
     )
 
     rtl(
         doc.add_paragraph(
-            f"منبع: "
-            f"{job['source_name']}"
+            clean_xml_text(
+                f"منبع: "
+                f"{job['source_name']}"
+            )
         )
     )
 
     rtl(
         doc.add_paragraph(
-            f"عبارت جست‌وجو: "
-            f"{job['query']}"
+            clean_xml_text(
+                f"عبارت جست‌وجو: "
+                f"{job['query']}"
+            )
         )
     )
 
@@ -1244,22 +1271,28 @@ def make_doc(jid):
 
     rtl(
         doc.add_paragraph(
-            'محل جست‌وجو: '
-            + '، '.join(places)
+            clean_xml_text(
+                'محل جست‌وجو: '
+                + '، '.join(places)
+            )
         )
     )
 
     rtl(
         doc.add_paragraph(
-            f"تعداد نتایج: "
-            f"{len(job['results'])}"
+            clean_xml_text(
+                f"تعداد نتایج: "
+                f"{len(job['results'])}"
+            )
         )
     )
 
     rtl(
         doc.add_paragraph(
-            f"آرای بررسی‌شده: "
-            f"{job['checked']}"
+            clean_xml_text(
+                f"آرای بررسی‌شده: "
+                f"{job['checked']}"
+            )
         )
     )
 
@@ -1267,8 +1300,10 @@ def make_doc(jid):
 
         rtl(
             doc.add_paragraph(
-                'توجه: جست‌وجو پیش از '
-                'تکمیل توسط کاربر متوقف شده است.'
+                clean_xml_text(
+                    'توجه: جست‌وجو پیش از '
+                    'تکمیل توسط کاربر متوقف شده است.'
+                )
             )
         )
 
@@ -1279,7 +1314,9 @@ def make_doc(jid):
 
         rtl(
             doc.add_heading(
-                f"{i}. {vote['title']}",
+                clean_xml_text(
+                    f"{i}. {vote['title']}"
+                ),
                 1
             )
         )
@@ -1293,9 +1330,11 @@ def make_doc(jid):
 
             rtl(
                 doc.add_paragraph(
-                    'عبارت موردنظر در: '
-                    + '، '.join(
-                        locations
+                    clean_xml_text(
+                        'عبارت موردنظر در: '
+                        + '، '.join(
+                            locations
+                        )
                     )
                 )
             )
@@ -1306,23 +1345,35 @@ def make_doc(jid):
 
             rtl(
                 doc.add_paragraph(
-                    'پیام رأی: '
-                    + vote[
-                        'abstract'
-                    ]
+                    clean_xml_text(
+                        'پیام رأی: '
+                        + vote[
+                            'abstract'
+                        ]
+                    )
                 )
             )
 
         rtl(
             doc.add_paragraph(
-                vote['body']
+                clean_xml_text(
+                    vote.get(
+                        'body',
+                        ''
+                    )
+                )
             )
         )
 
         rtl(
             doc.add_paragraph(
-                'منبع رسمی: '
-                + vote['url']
+                clean_xml_text(
+                    'منبع رسمی: '
+                    + vote.get(
+                        'url',
+                        ''
+                    )
+                )
             )
         )
 
@@ -1615,4 +1666,4 @@ if __name__ == '__main__':
                 5000
             )
         )
-)
+    )
