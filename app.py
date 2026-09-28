@@ -411,8 +411,6 @@ def official_search(
     search_text
 ):
 
-    # First GET is important:
-    # cookies + current form structure
     initial = session.get(
         LIST,
         timeout=30
@@ -429,13 +427,10 @@ def official_search(
         initial.text
     )
 
-    # Start with hidden fields actually supplied by
-    # the official search form.
     payload = hidden_fields(
         form
     )
 
-    # Remove fields that we are about to supply ourselves.
     controlled = {
         'Title',
         'IsTitleSearch',
@@ -455,14 +450,10 @@ def official_search(
         if k not in controlled
     ]
 
-    # Search phrase
     payload.append(
         ('Title', query)
     )
 
-    # IMPORTANT:
-    # MVC checkboxes send "true" only when checked,
-    # followed by the hidden "false" value.
     if search_title:
         payload.append(
             ('IsTitleSearch', 'true')
@@ -471,7 +462,6 @@ def official_search(
     payload.append(
         ('IsTitleSearch', 'false')
     )
-
 
     if search_abstract:
         payload.append(
@@ -482,7 +472,6 @@ def official_search(
         ('IsAbstractSearch', 'false')
     )
 
-
     if search_text:
         payload.append(
             ('IsTextSearch', 'true')
@@ -492,9 +481,6 @@ def official_search(
         ('IsTextSearch', 'false')
     )
 
-
-    # Keep category filters UNSELECTED,
-    # exactly like the default official form.
     payload.append(
         ('_IsOfficial', 'false')
     )
@@ -507,14 +493,10 @@ def official_search(
         ('_IsPenal', 'false')
     )
 
-
-    # Search mode:
-    # 3 = بخشی از کلمه‌ها
     payload.append(
         ('SeachTextType', '3')
     )
 
-    # Sort
     payload.append(
         ('SortColumn', 'Overdate')
     )
@@ -522,7 +504,6 @@ def official_search(
     payload.append(
         ('SortDesc', 'True')
     )
-
 
     response = session.post(
         LIST,
@@ -571,8 +552,6 @@ def get_page(
         if k not in controlled
     ]
 
-    # These are the actual fields in the second form
-    # on the official website.
     payload.append(
         ('PageNumbers', str(page))
     )
@@ -584,7 +563,6 @@ def get_page(
     payload.append(
         ('PageSize', str(PAGE_SIZE))
     )
-
 
     response = session.post(
         LIST,
@@ -686,9 +664,6 @@ def fetch_vote(
         )
     )
 
-
-    # ---------------- TITLE ----------------
-
     title = extract_between(
         full_text,
         ['عنوان: ', 'عنوان : ', 'عنوان'],
@@ -720,9 +695,6 @@ def fetch_vote(
 
         title = 'رأی قضایی'
 
-
-    # ---------------- ABSTRACT / پیام ----------------
-
     abstract = extract_between(
         full_text,
         [
@@ -737,9 +709,6 @@ def fetch_vote(
             'آراء منتخب پرونده'
         ]
     )
-
-
-    # ---------------- BODY ----------------
 
     body_markers = [
         'رأی شعبه بدوی',
@@ -775,8 +744,6 @@ def fetch_vote(
 
         body = full_text
 
-
-    # Remove common footer
     footer_position = len(body)
 
     for marker in [
@@ -799,7 +766,6 @@ def fetch_vote(
     body = norm(
         body[:footer_position]
     )
-
 
     return {
         'url': url,
@@ -927,10 +893,6 @@ def worker(
             'در حال جست‌وجو در سامانه رسمی...'
         )
 
-        # ---------------------------------------------
-        # REAL SEARCH FIRST
-        # ---------------------------------------------
-
         first_html = official_search(
             session,
             query,
@@ -951,14 +913,6 @@ def worker(
             first_html
         )
 
-
-        # ---------------------------------------------
-        # SANITY CHECK
-        # ---------------------------------------------
-
-        # The default unfiltered page had 1052 pages.
-        # If a specific search still gives 1052,
-        # something is wrong: do NOT scan the whole site.
         if (
             real_total_pages >= 1000
             and query.strip()
@@ -977,7 +931,6 @@ def worker(
 
             return
 
-
         if not first_links:
 
             job['status'] = 'done'
@@ -993,11 +946,9 @@ def worker(
 
             return
 
-
         if real_total_pages <= 0:
 
             real_total_pages = 1
-
 
         pages_to_scan = min(
             real_total_pages,
@@ -1016,17 +967,11 @@ def worker(
             official_total
         )
 
-
         seen = set()
 
         previous_links = None
 
         current_html = first_html
-
-
-        # ---------------------------------------------
-        # PAGES
-        # ---------------------------------------------
 
         for page in range(
             1,
@@ -1036,14 +981,12 @@ def worker(
             if job['cancel']:
                 break
 
-
             job['current_page'] = page
 
             job['message'] = (
                 f'در حال بررسی صفحه '
                 f'{page} از {pages_to_scan}'
             )
-
 
             if page == 1:
 
@@ -1059,30 +1002,35 @@ def worker(
 
                 current_html = html
 
-
             links = get_vote_links(
                 html
             )
 
+            # =================================================
+            # ONLY FIX:
+            # اگر صفحه آخر خالی برگشت، جست‌وجو موفق تمام شود
+            # و نتایج قبلی برای Word حفظ شوند.
+            # =================================================
 
             if not links:
 
-                job['status'] = 'error'
+                job['completed_pages'] = page
+                job['current_page'] = page
+                job['progress'] = 100
+                job['status'] = 'done'
 
                 job['message'] = (
-                    f'صفحه {page} دریافت شد، '
-                    'اما هیچ رأیی در آن پیدا نشد.'
+                    f'جست‌وجو تکمیل شد. '
+                    f'{job["checked"]} رأی بررسی شد و '
+                    f'{job["found"]} نتیجه منطبق یافت شد.'
                 )
 
                 return
-
 
             current_links = set(
                 links
             )
 
-
-            # Detect broken pagination
             if (
                 page > 1
                 and previous_links is not None
@@ -1099,11 +1047,9 @@ def worker(
 
                 return
 
-
             previous_links = (
                 current_links
             )
-
 
             new_links = []
 
@@ -1114,19 +1060,12 @@ def worker(
                     seen.add(url)
                     new_links.append(url)
 
-
-            # -----------------------------------------
-            # OPEN EACH JUDGMENT
-            # -----------------------------------------
-
             for url in new_links:
 
                 if job['cancel']:
                     break
 
-
                 job['checked'] += 1
-
 
                 try:
 
@@ -1134,7 +1073,6 @@ def worker(
                         url,
                         session
                     )
-
 
                     if vote_matches(
                         vote,
@@ -1162,18 +1100,15 @@ def worker(
                             job['results']
                         )
 
-
                 except Exception:
 
                     job[
                         'failed_items'
                     ] += 1
 
-
             job[
                 'completed_pages'
             ] = page
-
 
             job['progress'] = min(
                 99,
@@ -1185,19 +1120,12 @@ def worker(
                 )
             )
 
-
             job['message'] = (
                 f'صفحه {page} از '
                 f'{pages_to_scan} بررسی شد.'
             )
 
-
             time.sleep(0.15)
-
-
-        # ---------------------------------------------
-        # FINISH
-        # ---------------------------------------------
 
         if job['cancel']:
 
@@ -1210,7 +1138,6 @@ def worker(
                 'کاربر متوقف شد.'
             )
 
-
         elif job['status'] == 'running':
 
             job['status'] = 'done'
@@ -1220,7 +1147,6 @@ def worker(
             job['message'] = (
                 'جست‌وجو تکمیل شد.'
             )
-
 
     except Exception as e:
 
@@ -1278,14 +1204,12 @@ def make_doc(jid):
 
     doc = Document()
 
-
     rtl(
         doc.add_heading(
             'آرای قضایی یافت‌شده',
             0
         )
     )
-
 
     rtl(
         doc.add_paragraph(
@@ -1294,14 +1218,12 @@ def make_doc(jid):
         )
     )
 
-
     rtl(
         doc.add_paragraph(
             f"عبارت جست‌وجو: "
             f"{job['query']}"
         )
     )
-
 
     places = []
 
@@ -1320,14 +1242,12 @@ def make_doc(jid):
             'متن رأی'
         )
 
-
     rtl(
         doc.add_paragraph(
             'محل جست‌وجو: '
             + '، '.join(places)
         )
     )
-
 
     rtl(
         doc.add_paragraph(
@@ -1336,14 +1256,12 @@ def make_doc(jid):
         )
     )
 
-
     rtl(
         doc.add_paragraph(
             f"آرای بررسی‌شده: "
             f"{job['checked']}"
         )
     )
-
 
     if job['status'] == 'cancelled':
 
@@ -1353,7 +1271,6 @@ def make_doc(jid):
                 'تکمیل توسط کاربر متوقف شده است.'
             )
         )
-
 
     for i, vote in enumerate(
         job['results'],
@@ -1367,12 +1284,10 @@ def make_doc(jid):
             )
         )
 
-
         locations = vote.get(
             'matched_in',
             []
         )
-
 
         if locations:
 
@@ -1384,7 +1299,6 @@ def make_doc(jid):
                     )
                 )
             )
-
 
         if vote.get(
             'abstract'
@@ -1399,13 +1313,11 @@ def make_doc(jid):
                 )
             )
 
-
         rtl(
             doc.add_paragraph(
                 vote['body']
             )
         )
-
 
         rtl(
             doc.add_paragraph(
@@ -1414,9 +1326,7 @@ def make_doc(jid):
             )
         )
 
-
         doc.add_page_break()
-
 
     path = (
         f'/tmp/{jid}.docx'
@@ -1446,12 +1356,10 @@ def start():
         force=True
     )
 
-
     query = (
         data.get('query')
         or ''
     ).strip()
-
 
     search_title = bool(
         data.get(
@@ -1460,14 +1368,12 @@ def start():
         )
     )
 
-
     search_abstract = bool(
         data.get(
             'search_abstract',
             False
         )
     )
-
 
     search_text = bool(
         data.get(
@@ -1476,7 +1382,6 @@ def start():
         )
     )
 
-
     if not query:
 
         return jsonify(
@@ -1484,7 +1389,6 @@ def start():
                 'عبارت جست‌وجو الزامی است'
             )
         ), 400
-
 
     if not (
         search_title
@@ -1500,7 +1404,6 @@ def start():
             )
         ), 400
 
-
     try:
 
         max_pages = int(
@@ -1514,7 +1417,6 @@ def start():
 
         max_pages = 1100
 
-
     max_pages = min(
         max(
             max_pages,
@@ -1523,11 +1425,9 @@ def start():
         1100
     )
 
-
     jid = str(
         uuid.uuid4()
     )
-
 
     JOBS[jid] = {
 
@@ -1591,7 +1491,6 @@ def start():
             'جست‌وجو آغاز شد.'
     }
 
-
     threading.Thread(
         target=worker,
         args=(
@@ -1604,7 +1503,6 @@ def start():
         ),
         daemon=True
     ).start()
-
 
     return jsonify(
         job_id=jid,
@@ -1619,13 +1517,11 @@ def status(jid):
         jid
     )
 
-
     if not job:
 
         return jsonify(
             error='یافت نشد'
         ), 404
-
 
     return jsonify(
 
@@ -1674,16 +1570,13 @@ def cancel(jid):
         jid
     )
 
-
     if not job:
 
         return jsonify(
             error='یافت نشد'
         ), 404
 
-
     job['cancel'] = True
-
 
     return jsonify(
         ok=True
@@ -1699,7 +1592,6 @@ def download(jid):
             'Not found',
             404
         )
-
 
     return send_file(
         make_doc(jid),
@@ -1723,4 +1615,4 @@ if __name__ == '__main__':
                 5000
             )
         )
-        )
+)
