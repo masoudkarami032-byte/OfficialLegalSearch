@@ -1657,7 +1657,9 @@ def download(jid):
 @app.route('/test-qavanin')
 def test_qavanin():
     try:
-        url = 'https://qavanin.ir/'
+        import requests
+
+        session = requests.Session()
 
         headers = {
             'User-Agent': (
@@ -1665,31 +1667,60 @@ def test_qavanin():
                 'AppleWebKit/537.36 (KHTML, like Gecko) '
                 'Chrome/140.0.0.0 Safari/537.36'
             ),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept': (
+                'text/html,application/xhtml+xml,application/xml;'
+                'q=0.9,image/avif,image/webp,*/*;q=0.8'
+            ),
             'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Upgrade-Insecure-Requests': '1',
         }
 
-        r = requests.get(
-            url,
+        r = session.get(
+            'https://qavanin.ir/',
             headers=headers,
             timeout=30,
-            allow_redirects=True
+            allow_redirects=False
         )
+
+        interesting_headers = {}
+
+        for key, value in r.headers.items():
+            if key.lower() in [
+                'location',
+                'set-cookie',
+                'server',
+                'content-type',
+                'content-length',
+                'refresh',
+                'x-frame-options',
+                'cf-ray'
+            ]:
+                interesting_headers[key] = value
 
         return {
             'status_code': r.status_code,
-            'final_url': r.url,
-            'content_type': r.headers.get('Content-Type'),
-            'server': r.headers.get('Server'),
+            'url': r.url,
+            'headers': interesting_headers,
+            'cookies_response': r.cookies.get_dict(),
+            'cookies_session': session.cookies.get_dict(),
+            'history': [
+                {
+                    'status': x.status_code,
+                    'url': x.url
+                }
+                for x in r.history
+            ],
             'content_length': len(r.content),
-            'preview': r.text[:1000]
+            'preview': r.text[:4000]
         }
 
     except Exception as e:
         return {
             'error': str(e),
             'error_type': type(e).__name__
-        }
+    }
 if __name__ == '__main__':
 
     app.run(
