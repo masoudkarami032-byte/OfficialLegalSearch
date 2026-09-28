@@ -1654,7 +1654,42 @@ def download(jid):
         )
     )
 
+@app.route('/test-qavanin')
+def test_qavanin():
+    try:
+        url = 'https://qavanin.ir/'
 
+        headers = {
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/140.0.0.0 Safari/537.36'
+            ),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
+        }
+
+        r = requests.get(
+            url,
+            headers=headers,
+            timeout=30,
+            allow_redirects=True
+        )
+
+        return {
+            'status_code': r.status_code,
+            'final_url': r.url,
+            'content_type': r.headers.get('Content-Type'),
+            'server': r.headers.get('Server'),
+            'content_length': len(r.content),
+            'preview': r.text[:1000]
+        }
+
+    except Exception as e:
+        return {
+            'error': str(e),
+            'error_type': type(e).__name__
+        }
 if __name__ == '__main__':
 
     app.run(
