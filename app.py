@@ -28,6 +28,12 @@ SOURCE_NAME = 'سامانه ملی آرای قضایی پژوهشگاه قوه �
 
 PAGE_SIZE = 25
 
+QAVANIN_BASE = 'https://qavanin.ir'
+QAVANIN_LIST = QAVANIN_BASE + '/'
+QAVANIN_SOURCE_ID = 'national_laws'
+QAVANIN_SOURCE_NAME = 'سامانه ملی قوانین و مقررات جمهوری اسلامی ایران'
+QAVANIN_PAGE_SIZE = 25
+
 
 # =========================================================
 # NORMALIZE TEXT
@@ -871,6 +877,402 @@ def matched_in(
 
 
 # =========================================================
+# QAVANIN.IR - OFFICIAL LAWS ENGINE
+# =========================================================
+
+def make_qavanin_session():
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/153.0.0.0 Safari/537.36',
+        'Accept':
+            'text/html,application/xhtml+xml,application/xml;'
+            'q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language':
+            'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Upgrade-Insecure-Requests': '1',
+        'Referer': QAVANIN_LIST
+    })
+    return session
+
+
+def qavanin_is_challenge(html):
+    lower = (html or '').lower()
+    markers = (
+        'transferring to the website',
+        'error-section--waiting',
+        'istehrantimezone',
+        'arvancloud'
+    )
+    return any(x in lower for x in markers)
+
+
+def qavanin_search_page(session, query, page=1, search_title=True, search_text=False):
+    params = [
+        ('CAPTION', query),
+        ('Zone', ''),
+    ]
+
+    if search_title:
+        params.append(('IsTitleSearch', 'true'))
+    params.append(('IsTitleSearch', 'false'))
+
+    if search_text:
+        params.append(('IsTextSearch', 'true'))
+    params.append(('IsTextSearch', 'false'))
+
+    params.extend([
+        ('_isLaw', 'false'),
+        ('_isRegulation', 'false'),
+        ('_IsVote', 'false'),
+        ('_isOpenion', 'false'),
+        ('SeachTextType', '3'),
+        ('fromApproveDate', ''),
+        ('APPROVEDATE', ''),
+        ('IsTitleSubject', 'False'),
+        ('IsMain', ''),
+        ('COMMANDNO', ''),
+        ('fromCommandDate', ''),
+        ('COMMANDDATE', ''),
+        ('NEWSPAPERNO', ''),
+        ('fromNewspaperDate', ''),
+        ('NEWSPAPERDATE', ''),
+        ('SortColumn', 'APPROVEDATE'),
+        ('SortDesc', 'True'),
+        ('Report_ID', ''),
+        ('PageNumber', str(page)),
+        ('page', str(page)),
+        ('size', str(QAVANIN_PAGE_SIZE)),
+        ('txtZone', ''),
+        ('txtSubjects', ''),
+        ('txtExecutors', ''),
+        ('txtApprovers', ''),
+        ('txtLawStatus', ''),
+        ('txtLawTypes', ''),
+    ])
+
+    response = session.get(
+        QAVANIN_LIST,
+        params=params,
+        timeout=30,
+        allow_redirects=True
+    )
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or 'utf-8'
+
+    if qavanin_is_challenge(response.text):
+        raise RuntimeError(
+            'سامانه قوانین به این سرور صفحه امنیتی ArvanCloud برگرداند.'
+        )
+
+    return response.text
+
+
+def get_law_links(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    results = []
+    seen = set()
+
+    for a in soup.find_all('a', href=True):
+        href = (a.get('href') or '').strip()
+        href_lower = href.lower()
+
+        # Qavanin document links are under /Law/.
+        if '/law/' not in href_lower:
+            continue
+
+        # Ignore obvious navigation/search/static links.
+        if any(x in href_lower for x in (
+            '/law/index',
+            '/law/search',
+            'javascript:',
+            '#'
+        )):
+            continue
+
+        url = urljoin(QAVANIN_BASE, href)
+
+        if url in seen:
+            continue
+
+        title = norm(a.get_text(' ', strip=True))
+        if not title:
+            continue
+
+        seen.add(url)
+        results.append({
+            'url': url,
+            'title': title
+        })
+
+    return results
+
+
+def extract_qavanin_total_results(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    page_text = norm(soup.get_text(' ', strip=True))
+
+    patterns = [
+        r'تعداد\s*یافته\s*ها\s*[:：]?\s*([0-9۰-۹,٬]+)',
+        r'تعداد\s*یافته‌ها\s*[:：]?\s*([0-9۰-۹,٬]+)',
+        r'تعداد\s*نتایج\s*[:：]?\s*([0-9۰-۹,٬]+)'
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, page_text)
+        if not m:
+            continue
+
+        value = fa_to_en(m.group(1)).replace(',', '').replace('٬', '')
+        try:
+            return int(value)
+        except ValueError:
+            pass
+
+    return None
+
+
+def fetch_law(url, session):
+    response = session.get(
+        url,
+        timeout=30,
+        allow_redirects=True
+    )
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or 'utf-8'
+
+    if qavanin_is_challenge(response.text):
+        raise RuntimeError(
+            'صفحه قانون توسط لایه امنیتی ArvanCloud مسدود شد.'
+        )
+
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    for tag in soup(['script', 'style', 'noscript']):
+        tag.decompose()
+
+    full_text = norm(soup.get_text(' ', strip=True))
+
+    title = ''
+    for selector in ('h1', 'h2', 'h3'):
+        h = soup.find(selector)
+        if h:
+            candidate = norm(h.get_text(' ', strip=True))
+            if candidate:
+                title = candidate
+                break
+
+    if not title:
+        title = 'قانون یا مقرره'
+
+    body = full_text
+
+    # Remove common site-navigation material when a recognizable
+    # document-text marker is available.
+    starts = [
+        'متن مصوبه',
+        'متن قانون',
+        'متن مقرره',
+        'ماده 1',
+        'ماده ۱'
+    ]
+    positions = [body.find(x) for x in starts if body.find(x) != -1]
+    if positions:
+        body = body[min(positions):]
+
+    return {
+        'url': url,
+        'title': title,
+        'abstract': '',
+        'body': norm(body),
+        'text': full_text,
+        'source': QAVANIN_SOURCE_NAME
+    }
+
+
+def law_matches(law, query, search_title, search_text):
+    selected = []
+
+    if search_title:
+        selected.append(law.get('title', ''))
+
+    if search_text:
+        selected.append(law.get('body', ''))
+
+    return matches(' '.join(selected), query)
+
+
+def law_matched_in(law, query, search_title, search_text):
+    locations = []
+
+    if search_title and matches(law.get('title', ''), query):
+        locations.append('عنوان')
+
+    if search_text and matches(law.get('body', ''), query):
+        locations.append('متن قانون')
+
+    return locations
+
+
+def qavanin_worker(
+    jid,
+    query,
+    max_pages,
+    search_title,
+    search_text
+):
+    job = JOBS[jid]
+    session = make_qavanin_session()
+
+    try:
+        job['message'] = 'در حال جست‌وجو در سامانه ملی قوانین و مقررات...'
+
+        first_html = qavanin_search_page(
+            session,
+            query,
+            page=1,
+            search_title=search_title,
+            search_text=search_text
+        )
+
+        first_items = get_law_links(first_html)
+        official_total = extract_qavanin_total_results(first_html)
+
+        if not first_items:
+            job['status'] = 'done'
+            job['progress'] = 100
+            job['total_pages'] = 0
+            job['message'] = 'برای این عبارت نتیجه‌ای در سامانه قوانین یافت نشد.'
+            return
+
+        if official_total is not None:
+            real_total_pages = max(
+                1,
+                math.ceil(official_total / QAVANIN_PAGE_SIZE)
+            )
+        else:
+            real_total_pages = max_pages
+
+        pages_to_scan = min(real_total_pages, max_pages)
+
+        job['total_pages'] = pages_to_scan
+        job['site_total_pages'] = real_total_pages
+        job['official_results'] = official_total
+
+        seen = set()
+        previous_urls = None
+
+        for page in range(1, pages_to_scan + 1):
+            if job['cancel']:
+                break
+
+            job['current_page'] = page
+            job['message'] = (
+                f'در حال بررسی صفحه {page} از {pages_to_scan} قوانین'
+            )
+
+            if page == 1:
+                html = first_html
+            else:
+                html = qavanin_search_page(
+                    session,
+                    query,
+                    page=page,
+                    search_title=search_title,
+                    search_text=search_text
+                )
+
+            items = get_law_links(html)
+            current_urls = {x['url'] for x in items}
+
+            if not items:
+                break
+
+            if (
+                page > 1
+                and previous_urls is not None
+                and current_urls == previous_urls
+            ):
+                job['status'] = 'error'
+                job['message'] = (
+                    f'صفحه {page} همان نتایج صفحه قبلی را برگرداند؛ '
+                    'صفحه‌بندی سامانه قوانین صحیح انجام نشد.'
+                )
+                return
+
+            previous_urls = current_urls
+
+            for item in items:
+                if job['cancel']:
+                    break
+
+                url = item['url']
+                if url in seen:
+                    continue
+
+                seen.add(url)
+                job['checked'] += 1
+
+                try:
+                    law = fetch_law(url, session)
+
+                    # Prefer the result-list title when the document page
+                    # does not expose a useful heading.
+                    if law['title'] == 'قانون یا مقرره':
+                        law['title'] = item['title']
+
+                    if law_matches(
+                        law,
+                        query,
+                        search_title,
+                        search_text
+                    ):
+                        law['matched_in'] = law_matched_in(
+                            law,
+                            query,
+                            search_title,
+                            search_text
+                        )
+                        job['results'].append(law)
+                        job['found'] = len(job['results'])
+
+                except Exception:
+                    job['failed_items'] += 1
+
+            job['completed_pages'] = page
+            job['progress'] = min(
+                99,
+                round(page / pages_to_scan * 100, 1)
+            )
+            job['message'] = (
+                f'صفحه {page} از {pages_to_scan} قوانین بررسی شد.'
+            )
+
+            time.sleep(0.15)
+
+        if job['cancel']:
+            job['status'] = 'cancelled'
+            job['message'] = 'جست‌وجو به درخواست کاربر متوقف شد.'
+        elif job['status'] == 'running':
+            job['status'] = 'done'
+            job['progress'] = 100
+            job['message'] = (
+                f'جست‌وجوی قوانین تکمیل شد. '
+                f'{job["checked"]} سند بررسی شد و '
+                f'{job["found"]} نتیجه منطبق یافت شد.'
+            )
+
+    except Exception as e:
+        job['status'] = 'error'
+        job['message'] = (
+            'خطا در ارتباط با سامانه ملی قوانین و مقررات: '
+            + str(e)
+        )
+
+
+# =========================================================
 # WORKER
 # =========================================================
 
@@ -1558,6 +1960,72 @@ def start():
     return jsonify(
         job_id=jid,
         source_id=SOURCE_ID
+    )
+
+
+@app.post('/api/qavanin/search')
+def start_qavanin():
+    data = request.get_json(force=True)
+
+    query = (data.get('query') or '').strip()
+    search_title = bool(data.get('search_title', True))
+    search_text = bool(data.get('search_text', False))
+
+    if not query:
+        return jsonify(error='عبارت جست‌وجو الزامی است'), 400
+
+    if not (search_title or search_text):
+        return jsonify(
+            error='حداقل یکی از گزینه‌های عنوان یا متن قانون را انتخاب کنید.'
+        ), 400
+
+    try:
+        max_pages = int(data.get('max_pages', 1100))
+    except Exception:
+        max_pages = 1100
+
+    max_pages = min(max(max_pages, 1), 1100)
+
+    jid = str(uuid.uuid4())
+
+    JOBS[jid] = {
+        'job_id': jid,
+        'source_id': QAVANIN_SOURCE_ID,
+        'source_name': QAVANIN_SOURCE_NAME,
+        'query': query,
+        'search_title': search_title,
+        'search_abstract': False,
+        'search_text': search_text,
+        'status': 'running',
+        'cancel': False,
+        'checked': 0,
+        'found': 0,
+        'failed_items': 0,
+        'current_page': 0,
+        'completed_pages': 0,
+        'total_pages': 0,
+        'site_total_pages': 0,
+        'official_results': None,
+        'progress': 0,
+        'results': [],
+        'message': 'جست‌وجوی قوانین آغاز شد.'
+    }
+
+    threading.Thread(
+        target=qavanin_worker,
+        args=(
+            jid,
+            query,
+            max_pages,
+            search_title,
+            search_text
+        ),
+        daemon=True
+    ).start()
+
+    return jsonify(
+        job_id=jid,
+        source_id=QAVANIN_SOURCE_ID
     )
 
 
