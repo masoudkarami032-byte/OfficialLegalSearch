@@ -1656,70 +1656,84 @@ def download(jid):
 
 @app.route('/test-qavanin')
 def test_qavanin():
-    try:
-        import requests
+    import requests
 
-        session = requests.Session()
+    test_urls = [
+        'https://qavanin.ir/',
+        'https://qavanin.ir/Law/',
+        'https://qavanin.ir/Law/TreeText/',
+        'https://qavanin.ir/Law/TreeText/178971',
+        'https://qavanin.ir/Law/TreeText/?IDS=178971',
+    ]
 
-        headers = {
-            'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/140.0.0.0 Safari/537.36'
-            ),
-            'Accept': (
-                'text/html,application/xhtml+xml,application/xml;'
-                'q=0.9,image/avif,image/webp,*/*;q=0.8'
-            ),
-            'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            'Upgrade-Insecure-Requests': '1',
-        }
+    headers = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/140.0.0.0 Safari/537.36'
+        ),
+        'Accept': (
+            'text/html,application/xhtml+xml,application/xml;'
+            'q=0.9,image/avif,image/webp,*/*;q=0.8'
+        ),
+        'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Upgrade-Insecure-Requests': '1',
+    }
 
-        r = session.get(
-            'https://qavanin.ir/',
-            headers=headers,
-            timeout=30,
-            allow_redirects=False
-        )
+    results = []
 
-        interesting_headers = {}
+    for url in test_urls:
+        try:
+            session = requests.Session()
 
-        for key, value in r.headers.items():
-            if key.lower() in [
-                'location',
-                'set-cookie',
-                'server',
-                'content-type',
-                'content-length',
-                'refresh',
-                'x-frame-options',
-                'cf-ray'
-            ]:
-                interesting_headers[key] = value
+            r = session.get(
+                url,
+                headers=headers,
+                timeout=30,
+                allow_redirects=True
+            )
 
-        return {
-            'status_code': r.status_code,
-            'url': r.url,
-            'headers': interesting_headers,
-            'cookies_response': r.cookies.get_dict(),
-            'cookies_session': session.cookies.get_dict(),
-            'history': [
-                {
-                    'status': x.status_code,
-                    'url': x.url
-                }
-                for x in r.history
-            ],
-            'content_length': len(r.content),
-            'preview': r.text[:4000]
-        }
+            text = r.text
 
-    except Exception as e:
-        return {
-            'error': str(e),
-            'error_type': type(e).__name__
+            results.append({
+                'requested_url': url,
+                'status_code': r.status_code,
+                'final_url': r.url,
+                'content_length': len(r.content),
+                'content_type': r.headers.get('Content-Type'),
+                'server': r.headers.get('Server'),
+                'cookies': session.cookies.get_dict(),
+
+                'has_arvan_waiting': (
+                    'Transferring to the website' in text
+                ),
+
+                'has_server_error': (
+                    "Server Error in '/' Application" in text
+                    or 'Runtime Error' in text
+                ),
+
+                'has_persian_law_text': (
+                    'قانون' in text
+                    or 'مقررات' in text
+                    or 'مصوبه' in text
+                ),
+
+                'preview': text[:500]
+            })
+
+        except Exception as e:
+            results.append({
+                'requested_url': url,
+                'error': str(e),
+                'error_type': type(e).__name__
+            })
+
+    return {
+        'number_of_tests': len(results),
+        'results': results
     }
 if __name__ == '__main__':
 
