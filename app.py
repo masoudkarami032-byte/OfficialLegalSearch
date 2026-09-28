@@ -1654,56 +1654,6 @@ def download(jid):
         )
     )
 
-@app.route('/test-qavanin-print')
-def test_qavanin_print():
-    import requests
-
-    url = (
-        'https://qavanin.ir/Law/PrintText/'
-        '?IDS=17696862748302473106&font='
-    )
-
-    headers = {
-        'User-Agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/140.0.0.0 Safari/537.36'
-        ),
-        'Accept': 'text/html,application/xhtml+xml',
-        'Accept-Language': 'fa-IR,fa;q=0.9,en;q=0.8',
-    }
-
-    try:
-        r = requests.get(
-            url,
-            headers=headers,
-            timeout=30,
-            allow_redirects=True
-        )
-
-        text = r.text or ''
-
-        return {
-            'status_code': r.status_code,
-            'final_url': r.url,
-            'server': r.headers.get('Server'),
-            'content_length': len(r.content),
-            'arvan_waiting': (
-                'Transferring to the website' in text
-                or 'در ﺣﺎل اﻧﺘﻘﺎل' in text
-            ),
-            'has_law_text': (
-                'قانون نظام صنفي' in text
-                or 'ماده' in text
-            ),
-            'preview': text[:1500]
-        }
-
-    except Exception as e:
-        return {
-            'error': str(e),
-            'error_type': type(e).__name__
-        }
 
 
 if __name__ == '__main__':
