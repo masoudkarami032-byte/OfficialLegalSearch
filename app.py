@@ -1654,8 +1654,6 @@ def download(jid):
         )
     )
 
-
-if __name__ == '__main__':
 @app.route('/test-qavanin-print')
 def test_qavanin_print():
     import requests
@@ -1690,17 +1688,14 @@ def test_qavanin_print():
             'final_url': r.url,
             'server': r.headers.get('Server'),
             'content_length': len(r.content),
-
             'arvan_waiting': (
                 'Transferring to the website' in text
                 or 'در ﺣﺎل اﻧﺘﻘﺎل' in text
             ),
-
             'has_law_text': (
                 'قانون نظام صنفي' in text
                 or 'ماده' in text
             ),
-
             'preview': text[:1500]
         }
 
