@@ -1654,7 +1654,109 @@ def download(jid):
         )
     )
 
+@app.route('/test-qavanin-real')
+def test_qavanin_real():
+    import requests
 
+    url = 'https://qavanin.ir/'
+
+    params = [
+        ('CAPTION', 'قانون مدنی'),
+        ('Zone', ''),
+        ('IsTitleSearch', 'true'),
+        ('IsTitleSearch', 'false'),
+        ('IsTextSearch', 'false'),
+        ('_isLaw', 'false'),
+        ('_isRegulation', 'false'),
+        ('_IsVote', 'false'),
+        ('_isOpenion', 'false'),
+        ('SeachTextType', '3'),
+        ('fromApproveDate', ''),
+        ('APPROVEDATE', ''),
+        ('IsTitleSubject', 'False'),
+        ('IsMain', ''),
+        ('COMMANDNO', ''),
+        ('fromCommandDate', ''),
+        ('COMMANDDATE', ''),
+        ('NEWSPAPERNO', ''),
+        ('fromNewspaperDate', ''),
+        ('NEWSPAPERDATE', ''),
+        ('SortColumn', 'APPROVEDATE'),
+        ('SortDesc', 'True'),
+        ('Report_ID', ''),
+        ('PageNumber', '1'),
+        ('page', '1'),
+        ('size', '25'),
+        ('txtZone', ''),
+        ('txtSubjects', ''),
+        ('txtExecutors', ''),
+        ('txtApprovers', ''),
+        ('txtLawStatus', ''),
+        ('txtLawTypes', ''),
+    ]
+
+    headers = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/153.0.0.0 Safari/537.36'
+        ),
+        'Upgrade-Insecure-Requests': '1',
+        'Accept': (
+            'text/html,application/xhtml+xml,application/xml;'
+            'q=0.9,image/avif,image/webp,*/*;q=0.8'
+        ),
+        'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://qavanin.ir/',
+    }
+
+    try:
+        r = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=30,
+            allow_redirects=True
+        )
+
+        text = r.text or ''
+        lower_text = text.lower()
+
+        arvan_waiting = (
+            'transferring to the website' in lower_text
+            or 'istehrantimezone' in lower_text
+            or 'iranpage' in lower_text
+        )
+
+        search_result_markers = [
+            marker for marker in [
+                'قانون مدنی',
+                'تعداد یافته',
+                'اطلاعات پایه',
+                'متن',
+                '/Law/TreeText/',
+                'APPROVEDATE'
+            ]
+            if marker in text
+        ]
+
+        return {
+            'status_code': r.status_code,
+            'final_url': r.url,
+            'server': r.headers.get('Server'),
+            'content_type': r.headers.get('Content-Type'),
+            'content_length': len(r.content),
+            'arvan_waiting': arvan_waiting,
+            'has_qanun_madani': 'قانون مدنی' in text,
+            'search_result_markers': search_result_markers,
+            'preview': text[:1200]
+        }
+
+    except Exception as e:
+        return {
+            'error': str(e),
+            'error_type': type(e).__name__
+        }
 
 if __name__ == '__main__':
     app.run(
