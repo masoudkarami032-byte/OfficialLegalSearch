@@ -70,6 +70,13 @@
             font-size: 16px;
         }
 
+        .source-options {
+            margin-top: 18px;
+            padding: 15px;
+            background: #eef4fb;
+            border-radius: 10px;
+        }
+
         .search-options {
             margin-top: 18px;
             padding: 15px;
@@ -229,7 +236,7 @@
         <h1>نرم‌افزار جامع سایت‌های رسمی</h1>
 
         <p>
-            جست‌وجوی آرای قضایی در منابع رسمی
+            جست‌وجوی آرای قضایی و قوانین و مقررات در منابع رسمی
         </p>
     </div>
 
@@ -245,6 +252,40 @@
             type="text"
             placeholder="مثال: تصرف عدوانی"
         >
+
+
+        <div class="source-options">
+
+            <div class="search-options-title">
+                منبع جست‌وجو
+            </div>
+
+            <div class="options-row">
+
+                <label class="option">
+                    <input
+                        type="radio"
+                        name="source"
+                        id="sourceJudgments"
+                        value="judgments"
+                        checked
+                    >
+                    آرای قضایی
+                </label>
+
+                <label class="option">
+                    <input
+                        type="radio"
+                        name="source"
+                        id="sourceLaws"
+                        value="laws"
+                    >
+                    قوانین و مقررات
+                </label>
+
+            </div>
+
+        </div>
 
 
         <div class="search-options">
@@ -265,12 +306,12 @@
                 </label>
 
 
-                <label class="option">
+                <label class="option" id="abstractOption">
                     <input
                         type="checkbox"
                         id="searchAbstract"
                     >
-                    پیام
+                    <span id="abstractLabel">پیام</span>
                 </label>
 
 
@@ -279,13 +320,13 @@
                         type="checkbox"
                         id="searchText"
                     >
-                    متن رأی
+                    <span id="textLabel">متن رأی</span>
                 </label>
 
             </div>
 
 
-            <div class="help">
+            <div class="help" id="searchHelp">
                 می‌توانید یک یا چند گزینه را هم‌زمان انتخاب کنید.
                 اگر فقط «عنوان» انتخاب شود، جست‌وجو محدودتر و دقیق‌تر است.
                 برای جست‌وجوی گسترده‌تر، «پیام» یا «متن رأی» را نیز انتخاب کنید.
@@ -366,7 +407,7 @@
             </div>
 
             <div class="stat">
-                <span>آرای بررسی‌شده</span>
+                <span id="checkedLabel">آرای بررسی‌شده</span>
                 <strong id="checked">0</strong>
             </div>
 
@@ -376,7 +417,7 @@
             </div>
 
             <div class="stat">
-                <span>خطا در آرای منفرد</span>
+                <span id="failedLabel">خطا در آرای منفرد</span>
                 <strong id="failed">0</strong>
             </div>
 
@@ -385,7 +426,7 @@
 
         <div class="source">
             منبع:
-            سامانه ملی آرای قضایی پژوهشگاه قوه قضاییه
+            <span id="sourceName">سامانه ملی آرای قضایی پژوهشگاه قوه قضاییه</span>
         </div>
 
     </div>
@@ -410,6 +451,30 @@ const searchAbstract =
 
 const searchText =
     document.getElementById('searchText');
+
+const sourceJudgments =
+    document.getElementById('sourceJudgments');
+
+const sourceLaws =
+    document.getElementById('sourceLaws');
+
+const abstractOption =
+    document.getElementById('abstractOption');
+
+const textLabel =
+    document.getElementById('textLabel');
+
+const searchHelp =
+    document.getElementById('searchHelp');
+
+const sourceName =
+    document.getElementById('sourceName');
+
+const checkedLabel =
+    document.getElementById('checkedLabel');
+
+const failedLabel =
+    document.getElementById('failedLabel');
 
 const maxPages =
     document.getElementById('maxPages');
@@ -448,6 +513,54 @@ const failed =
     document.getElementById('failed');
 
 
+function updateSourceUI() {
+
+    if (sourceLaws.checked) {
+
+        abstractOption.style.display = 'none';
+        searchAbstract.checked = false;
+
+        textLabel.textContent = 'متن قانون';
+
+        searchHelp.textContent =
+            'در سامانه قوانین می‌توانید در عنوان یا متن قانون و مقرره جست‌وجو کنید.';
+
+        sourceName.textContent =
+            'سامانه ملی قوانین و مقررات جمهوری اسلامی ایران';
+
+        checkedLabel.textContent =
+            'اسناد بررسی‌شده';
+
+        failedLabel.textContent =
+            'خطا در اسناد منفرد';
+
+        query.placeholder =
+            'مثال: قانون مدنی';
+
+    } else {
+
+        abstractOption.style.display = 'flex';
+
+        textLabel.textContent = 'متن رأی';
+
+        searchHelp.textContent =
+            'می‌توانید یک یا چند گزینه را هم‌زمان انتخاب کنید. اگر فقط «عنوان» انتخاب شود، جست‌وجو محدودتر و دقیق‌تر است. برای جست‌وجوی گسترده‌تر، «پیام» یا «متن رأی» را نیز انتخاب کنید.';
+
+        sourceName.textContent =
+            'سامانه ملی آرای قضایی پژوهشگاه قوه قضاییه';
+
+        checkedLabel.textContent =
+            'آرای بررسی‌شده';
+
+        failedLabel.textContent =
+            'خطا در آرای منفرد';
+
+        query.placeholder =
+            'مثال: تصرف عدوانی';
+    }
+}
+
+
 function resetStatus() {
 
     progress.textContent = '0%';
@@ -480,17 +593,30 @@ async function startSearch() {
     }
 
 
-    if (
-        !searchTitle.checked &&
-        !searchAbstract.checked &&
-        !searchText.checked
-    ) {
+    if (sourceLaws.checked) {
 
-        alert(
-            'حداقل یکی از گزینه‌های عنوان، پیام یا متن رأی را انتخاب کنید.'
-        );
+        if (
+            !searchTitle.checked &&
+            !searchText.checked
+        ) {
+            alert(
+                'حداقل یکی از گزینه‌های عنوان یا متن قانون را انتخاب کنید.'
+            );
+            return;
+        }
 
-        return;
+    } else {
+
+        if (
+            !searchTitle.checked &&
+            !searchAbstract.checked &&
+            !searchText.checked
+        ) {
+            alert(
+                'حداقل یکی از گزینه‌های عنوان، پیام یا متن رأی را انتخاب کنید.'
+            );
+            return;
+        }
     }
 
 
@@ -509,8 +635,13 @@ async function startSearch() {
 
     try {
 
+        const endpoint =
+            sourceLaws.checked
+                ? '/api/qavanin/search'
+                : '/api/search';
+
         const response = await fetch(
-            '/api/search',
+            endpoint,
             {
                 method: 'POST',
 
@@ -739,6 +870,19 @@ function downloadWord() {
         '/api/download/' +
         currentJob;
 }
+
+
+sourceJudgments.addEventListener(
+    'change',
+    updateSourceUI
+);
+
+sourceLaws.addEventListener(
+    'change',
+    updateSourceUI
+);
+
+updateSourceUI();
 
 
 searchBtn.addEventListener(
