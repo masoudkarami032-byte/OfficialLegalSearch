@@ -1,280 +1,776 @@
 <!doctype html>
 <html lang="fa" dir="rtl">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>نرم‌افزار جامع سایت‌های رسمی</title>
+    <meta charset="utf-8">
 
-<style>
-*{box-sizing:border-box}
-body{font-family:Tahoma,Arial;background:#f3f5f8;margin:0;color:#17202a}
-.wrap{max-width:980px;margin:36px auto;padding:16px}
-.hero,.source{background:#fff;border:1px solid #e5e9ef;border-radius:18px;padding:24px;box-shadow:0 8px 28px #17202a0d}
-.hero h1{margin:0 0 8px;font-size:25px}
-.muted{color:#667085;font-size:14px;line-height:1.8}
-.search{display:flex;gap:10px;margin-top:20px}
-.search input{flex:1;padding:15px;border:1px solid #cfd6df;border-radius:11px;font-size:16px}
-.btn{border:0;border-radius:10px;padding:12px 18px;font-size:14px;cursor:pointer}
-.primary{background:#1769aa;color:#fff}
-.danger{background:#b42318;color:#fff}
-.success{background:#18794e;color:#fff;text-decoration:none;display:inline-block}
-.btn:disabled{opacity:.45;cursor:not-allowed}
-.sources-title{margin:26px 4px 12px}
-.source{margin-top:12px}
-.source-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
-.source h2{font-size:18px;margin:0 0 6px}
-.badge{padding:6px 10px;border-radius:999px;background:#eef2f6;font-size:12px;white-space:nowrap}
-.progress-row{display:flex;align-items:center;gap:12px;margin:18px 0 10px}
-.track{height:12px;background:#e9edf2;border-radius:999px;overflow:hidden;flex:1}
-.bar{height:100%;width:0;background:#1769aa;transition:width .35s}
-.pct{width:52px;text-align:left;font-weight:bold}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}
-.stat{background:#f7f9fb;border-radius:12px;padding:12px}
-.stat b{display:block;font-size:18px;margin-top:5px}
-.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
-.message{margin-top:12px;padding:11px 13px;background:#f8fafc;border-radius:10px;color:#475467;font-size:13px}
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
 
-@media(max-width:650px){
-.search{flex-direction:column}
-.stats{grid-template-columns:1fr 1fr}
-.source-head{flex-direction:column}
-.btn{width:100%}
-}
-</style>
+    <title>نرم‌افزار جامع سایت‌های رسمی</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: #f4f6f9;
+            font-family: Tahoma, Arial, sans-serif;
+            color: #222;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: auto;
+            padding: 18px;
+        }
+
+        .header {
+            background: #17365d;
+            color: white;
+            padding: 22px;
+            border-radius: 14px;
+            margin-bottom: 18px;
+        }
+
+        .header h1 {
+            margin: 0 0 10px;
+            font-size: 24px;
+        }
+
+        .header p {
+            margin: 0;
+            line-height: 1.9;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 14px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,.08);
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+
+        input[type="text"],
+        input[type="number"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #bbb;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+
+        .search-options {
+            margin-top: 18px;
+            padding: 15px;
+            background: #f7f9fc;
+            border-radius: 10px;
+        }
+
+        .search-options-title {
+            font-weight: bold;
+            margin-bottom: 12px;
+        }
+
+        .options-row {
+            display: flex;
+            gap: 18px;
+            flex-wrap: wrap;
+        }
+
+        .option {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-weight: normal;
+        }
+
+        .option input {
+            width: 19px;
+            height: 19px;
+        }
+
+        .help {
+            margin-top: 12px;
+            color: #666;
+            font-size: 13px;
+            line-height: 1.8;
+        }
+
+        button {
+            border: 0;
+            border-radius: 8px;
+            padding: 12px 20px;
+            font-size: 15px;
+            cursor: pointer;
+        }
+
+        .buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 18px;
+        }
+
+        #searchBtn {
+            background: #1769aa;
+            color: white;
+        }
+
+        #cancelBtn {
+            background: #b3261e;
+            color: white;
+            display: none;
+        }
+
+        #downloadBtn {
+            background: #287d3c;
+            color: white;
+            display: none;
+        }
+
+        button:disabled {
+            opacity: .6;
+            cursor: not-allowed;
+        }
+
+        .status-title {
+            font-weight: bold;
+            margin-bottom: 12px;
+        }
+
+        .progress-box {
+            width: 100%;
+            height: 22px;
+            background: #e4e7eb;
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 14px 0;
+        }
+
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            background: #1769aa;
+            transition: width .3s;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(140px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .stat {
+            background: #f4f6f9;
+            border-radius: 9px;
+            padding: 12px;
+        }
+
+        .stat span {
+            display: block;
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .stat strong {
+            font-size: 18px;
+        }
+
+        #message {
+            line-height: 1.8;
+        }
+
+        .source {
+            margin-top: 15px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        @media(max-width:600px) {
+            .container {
+                padding: 10px;
+            }
+
+            .header,
+            .card {
+                border-radius: 10px;
+            }
+
+            .header h1 {
+                font-size: 20px;
+            }
+
+            .options-row {
+                gap: 12px;
+            }
+        }
+    </style>
 </head>
 
 <body>
 
-<div class="wrap">
+<div class="container">
 
-<section class="hero">
-<h1>نرم‌افزار جامع سایت‌های رسمی</h1>
+    <div class="header">
+        <h1>نرم‌افزار جامع سایت‌های رسمی</h1>
 
-<div class="muted">
-نسخه آزمایشی — فعلاً یک منبع فعال است. هر منبع به‌صورت مستقل اجرا و لغو می‌شود.
+        <p>
+            جست‌وجوی آرای قضایی در منابع رسمی
+        </p>
+    </div>
+
+
+    <div class="card">
+
+        <label for="query">
+            عبارت جست‌وجو
+        </label>
+
+        <input
+            id="query"
+            type="text"
+            placeholder="مثال: تصرف عدوانی"
+        >
+
+
+        <div class="search-options">
+
+            <div class="search-options-title">
+                محل جست‌وجو
+            </div>
+
+            <div class="options-row">
+
+                <label class="option">
+                    <input
+                        type="checkbox"
+                        id="searchTitle"
+                        checked
+                    >
+                    عنوان
+                </label>
+
+
+                <label class="option">
+                    <input
+                        type="checkbox"
+                        id="searchAbstract"
+                    >
+                    پیام
+                </label>
+
+
+                <label class="option">
+                    <input
+                        type="checkbox"
+                        id="searchText"
+                    >
+                    متن رأی
+                </label>
+
+            </div>
+
+
+            <div class="help">
+                می‌توانید یک یا چند گزینه را هم‌زمان انتخاب کنید.
+                اگر فقط «عنوان» انتخاب شود، جست‌وجو محدودتر و دقیق‌تر است.
+                برای جست‌وجوی گسترده‌تر، «پیام» یا «متن رأی» را نیز انتخاب کنید.
+            </div>
+
+        </div>
+
+
+        <div style="margin-top:18px">
+
+            <label for="maxPages">
+                حداکثر تعداد صفحات
+            </label>
+
+            <input
+                id="maxPages"
+                type="number"
+                min="1"
+                max="1100"
+                value="1100"
+            >
+
+        </div>
+
+
+        <div class="buttons">
+
+            <button id="searchBtn">
+                شروع جست‌وجو
+            </button>
+
+            <button id="cancelBtn">
+                توقف جست‌وجو
+            </button>
+
+            <button id="downloadBtn">
+                دانلود Word
+            </button>
+
+        </div>
+
+    </div>
+
+
+    <div
+        class="card"
+        id="statusCard"
+        style="display:none"
+    >
+
+        <div class="status-title">
+            وضعیت جست‌وجو
+        </div>
+
+        <div id="message">
+            در حال آماده‌سازی...
+        </div>
+
+
+        <div class="progress-box">
+            <div
+                class="progress-bar"
+                id="progressBar"
+            ></div>
+        </div>
+
+
+        <div class="stats">
+
+            <div class="stat">
+                <span>پیشرفت</span>
+                <strong id="progress">0%</strong>
+            </div>
+
+            <div class="stat">
+                <span>صفحه</span>
+                <strong id="pages">0 / 0</strong>
+            </div>
+
+            <div class="stat">
+                <span>آرای بررسی‌شده</span>
+                <strong id="checked">0</strong>
+            </div>
+
+            <div class="stat">
+                <span>نتایج منطبق</span>
+                <strong id="found">0</strong>
+            </div>
+
+            <div class="stat">
+                <span>خطا در آرای منفرد</span>
+                <strong id="failed">0</strong>
+            </div>
+
+        </div>
+
+
+        <div class="source">
+            منبع:
+            سامانه ملی آرای قضایی پژوهشگاه قوه قضاییه
+        </div>
+
+    </div>
+
 </div>
 
-<div class="search">
-<input id="q" placeholder='مثال: تصرف عدوانی یا "تصرف عدوانی" AND ملک NOT کیفری'>
-<button class="btn primary" id="searchBtn" onclick="startAll()">جست‌وجو</button>
-</div>
-
-<div class="muted">
-عبارت ساده عیناً در متن رأی کنترل می‌شود. AND و NOT برای شروط اضافی قابل استفاده‌اند.
-</div>
-
-</section>
-
-<h3 class="sources-title">وضعیت منابع</h3>
-
-<section class="source" id="national_judgments">
-
-<div class="source-head">
-<div>
-<h2>سامانه ملی آرای قضایی پژوهشگاه قوه قضاییه</h2>
-<div class="muted">منبع رسمی آراء قضایی</div>
-</div>
-
-<span class="badge" id="badge">آماده</span>
-</div>
-
-<div class="progress-row">
-<div class="track">
-<div class="bar" id="bar"></div>
-</div>
-<div class="pct" id="pct">0٪</div>
-</div>
-
-<div class="stats">
-
-<div class="stat">
-صفحات بررسی‌شده
-<b id="pages">0 / —</b>
-</div>
-
-<div class="stat">
-آراء بررسی‌شده
-<b id="checked">0</b>
-</div>
-
-<div class="stat">
-آراء منطبق
-<b id="found">0</b>
-</div>
-
-<div class="stat">
-خطاهای موردی
-<b id="failed">0</b>
-</div>
-
-</div>
-
-<div class="message" id="message">
-آماده جست‌وجو
-</div>
-
-<div class="actions">
-
-<button
-class="btn danger"
-id="cancel"
-onclick="cancelSource()"
-disabled>
-انصراف از این منبع
-</button>
-
-<a
-class="btn success"
-id="download"
-style="display:none">
-دانلود Word این منبع
-</a>
-
-</div>
-
-</section>
-
-</div>
 
 <script>
 
-const source={job:null,timer:null};
+let currentJob = null;
+let timer = null;
 
-const $=id=>document.getElementById(id);
 
-function setState(d){
+const query =
+    document.getElementById('query');
 
-let p=Number(d.progress||0);
+const searchTitle =
+    document.getElementById('searchTitle');
 
-$('bar').style.width=p+'%';
-$('pct').textContent=p+'٪';
+const searchAbstract =
+    document.getElementById('searchAbstract');
 
-$('pages').textContent=
-`${d.completed_pages||0} / ${d.total_pages||'—'}`;
+const searchText =
+    document.getElementById('searchText');
 
-$('checked').textContent=d.checked||0;
-$('found').textContent=d.found||0;
-$('failed').textContent=d.failed_items||0;
+const maxPages =
+    document.getElementById('maxPages');
 
-$('message').textContent=d.message||'';
+const searchBtn =
+    document.getElementById('searchBtn');
 
-let labels={
-running:'در حال جست‌وجو',
-done:'تکمیل شد',
-cancelled:'لغو شد',
-error:'خطا'
-};
+const cancelBtn =
+    document.getElementById('cancelBtn');
 
-$('badge').textContent=
-labels[d.status]||'آماده';
+const downloadBtn =
+    document.getElementById('downloadBtn');
 
-if(d.status!=='running'){
+const statusCard =
+    document.getElementById('statusCard');
 
-$('cancel').disabled=true;
-$('searchBtn').disabled=false;
+const message =
+    document.getElementById('message');
 
-$('download').href=
-'/api/download/'+source.job;
+const progress =
+    document.getElementById('progress');
 
-$('download').style.display='inline-block';
+const progressBar =
+    document.getElementById('progressBar');
 
+const pages =
+    document.getElementById('pages');
+
+const checked =
+    document.getElementById('checked');
+
+const found =
+    document.getElementById('found');
+
+const failed =
+    document.getElementById('failed');
+
+
+function resetStatus() {
+
+    progress.textContent = '0%';
+
+    progressBar.style.width = '0%';
+
+    pages.textContent = '0 / 0';
+
+    checked.textContent = '0';
+
+    found.textContent = '0';
+
+    failed.textContent = '0';
+
+    downloadBtn.style.display = 'none';
 }
 
+
+async function startSearch() {
+
+    const q = query.value.trim();
+
+    if (!q) {
+
+        alert(
+            'عبارت جست‌وجو را وارد کنید.'
+        );
+
+        return;
+    }
+
+
+    if (
+        !searchTitle.checked &&
+        !searchAbstract.checked &&
+        !searchText.checked
+    ) {
+
+        alert(
+            'حداقل یکی از گزینه‌های عنوان، پیام یا متن رأی را انتخاب کنید.'
+        );
+
+        return;
+    }
+
+
+    resetStatus();
+
+    statusCard.style.display = 'block';
+
+    message.textContent =
+        'در حال شروع جست‌وجو...';
+
+    searchBtn.disabled = true;
+
+    cancelBtn.style.display =
+        'inline-block';
+
+
+    try {
+
+        const response = await fetch(
+            '/api/search',
+            {
+                method: 'POST',
+
+                headers: {
+                    'Content-Type':
+                        'application/json'
+                },
+
+                body: JSON.stringify({
+
+                    query: q,
+
+                    search_title:
+                        searchTitle.checked,
+
+                    search_abstract:
+                        searchAbstract.checked,
+
+                    search_text:
+                        searchText.checked,
+
+                    max_pages:
+                        parseInt(
+                            maxPages.value || '1100'
+                        )
+                })
+            }
+        );
+
+
+        const data =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error ||
+                'خطا در شروع جست‌وجو'
+            );
+        }
+
+
+        currentJob =
+            data.job_id;
+
+
+        timer = setInterval(
+            checkStatus,
+            1000
+        );
+
+
+        checkStatus();
+
+    }
+
+    catch (error) {
+
+        message.textContent =
+            error.message;
+
+        searchBtn.disabled =
+            false;
+
+        cancelBtn.style.display =
+            'none';
+    }
 }
 
-async function startAll(){
 
-let q=$('q').value.trim();
+async function checkStatus() {
 
-if(!q)
-return alert('عبارت جست‌وجو را وارد کنید.');
+    if (!currentJob) {
+        return;
+    }
 
-$('searchBtn').disabled=true;
-$('cancel').disabled=false;
-$('download').style.display='none';
 
-$('message').textContent=
-'در حال آغاز جست‌وجو…';
+    try {
 
-let r=await fetch('/api/search',{
+        const response =
+            await fetch(
+                '/api/status/' +
+                currentJob
+            );
 
-method:'POST',
 
-headers:{
-'Content-Type':'application/json'
-},
+        const data =
+            await response.json();
 
-body:JSON.stringify({
-query:q,
-max_pages:1052
-})
 
-});
+        if (!response.ok) {
 
-let d=await r.json();
+            throw new Error(
+                data.error ||
+                'خطا در دریافت وضعیت'
+            );
+        }
 
-if(!r.ok){
 
-$('searchBtn').disabled=false;
-$('cancel').disabled=true;
+        message.textContent =
+            data.message || '';
 
-return alert(d.error);
 
+        const percent =
+            Number(
+                data.progress || 0
+            );
+
+
+        progress.textContent =
+            percent + '%';
+
+
+        progressBar.style.width =
+            percent + '%';
+
+
+        pages.textContent =
+            (data.current_page || 0)
+            + ' / '
+            + (data.total_pages || 0);
+
+
+        checked.textContent =
+            data.checked || 0;
+
+
+        found.textContent =
+            data.found || 0;
+
+
+        failed.textContent =
+            data.failed_items || 0;
+
+
+        if (
+            data.status === 'done' ||
+            data.status === 'cancelled' ||
+            data.status === 'error'
+        ) {
+
+            clearInterval(timer);
+
+            timer = null;
+
+            searchBtn.disabled =
+                false;
+
+            cancelBtn.style.display =
+                'none';
+
+
+            if (
+                data.status === 'done' ||
+                data.status === 'cancelled'
+            ) {
+
+                downloadBtn.style.display =
+                    'inline-block';
+            }
+        }
+
+    }
+
+    catch (error) {
+
+        clearInterval(timer);
+
+        timer = null;
+
+        message.textContent =
+            error.message;
+
+        searchBtn.disabled =
+            false;
+
+        cancelBtn.style.display =
+            'none';
+    }
 }
 
-source.job=d.job_id;
 
-poll();
+async function cancelSearch() {
 
+    if (!currentJob) {
+        return;
+    }
+
+
+    cancelBtn.disabled =
+        true;
+
+    message.textContent =
+        'در حال توقف جست‌وجو...';
+
+
+    try {
+
+        await fetch(
+            '/api/cancel/' +
+            currentJob,
+            {
+                method: 'POST'
+            }
+        );
+
+    }
+
+    finally {
+
+        cancelBtn.disabled =
+            false;
+    }
 }
 
-async function poll(){
 
-if(!source.job)return;
+function downloadWord() {
 
-try{
+    if (!currentJob) {
+        return;
+    }
 
-let r=
-await fetch('/api/status/'+source.job),
 
-d=
-await r.json();
-
-setState(d);
-
-if(d.status==='running')
-source.timer=setTimeout(poll,900);
-
+    window.location.href =
+        '/api/download/' +
+        currentJob;
 }
 
-catch(e){
 
-$('message').textContent=
-'ارتباط با سرور موقتاً قطع شد؛ دوباره تلاش می‌شود.';
-
-source.timer=setTimeout(poll,1800);
-
-}
-
-}
-
-async function cancelSource(){
-
-if(!source.job)return;
-
-$('cancel').disabled=true;
-
-$('message').textContent=
-'درخواست توقف این منبع ارسال شد…';
-
-await fetch(
-'/api/cancel/'+source.job,
-{method:'POST'}
+searchBtn.addEventListener(
+    'click',
+    startSearch
 );
 
-setTimeout(poll,300);
 
-}
+cancelBtn.addEventListener(
+    'click',
+    cancelSearch
+);
+
+
+downloadBtn.addEventListener(
+    'click',
+    downloadWord
+);
+
+
+query.addEventListener(
+    'keydown',
+    function(event) {
+
+        if (event.key === 'Enter') {
+
+            event.preventDefault();
+
+            startSearch();
+        }
+    }
+);
 
 </script>
 
