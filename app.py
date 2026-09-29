@@ -563,7 +563,7 @@ def official_search(
     )
 
     payload.append(
-        ('SeachTextType', '3')
+        ('SeachTextType', '1')
     )
 
     payload.append(
