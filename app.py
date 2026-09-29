@@ -1262,7 +1262,13 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
             return
 
         if use_rest and real_total_pages > 0:
-            pages_to_scan = min(real_total_pages, max_pages)
+            # IMPORTANT: `max_pages` is the user's scan ceiling.  Do not stop
+            # merely because the REST search endpoint reports one page / 100
+            # candidates; some Nezamat/WordPress deployments cap that endpoint
+            # and under-report additional searchable records.  We therefore
+            # continue page-by-page up to the requested ceiling and stop only
+            # when the server actually returns an empty/out-of-range page.
+            pages_to_scan = max_pages
             job['site_total_pages'] = real_total_pages
         else:
             pages_to_scan = max_pages
@@ -1290,10 +1296,20 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                 try:
                     items, _, _ = qavanin_rest_page(session, query, page=page, per_page=100)
                 except requests.exceptions.HTTPError as e:
-                    # WordPress returns 400 when page exceeds the final page.
+                    # Some WordPress REST deployments cap search pagination at
+                    # 100 results.  If that happens, continue through the public
+                    # HTML search pagination instead of silently ending at 100.
                     if e.response is not None and e.response.status_code == 400:
-                        break
-                    raise
+                        html = qavanin_search_page(
+                            session, query, page=page,
+                            search_title=search_title,
+                            search_text=search_text
+                        )
+                        items = get_law_links(html)
+                        use_rest = False
+                        real_total_pages = 0
+                    else:
+                        raise
             else:
                 html = qavanin_search_page(
                     session, query, page=page,
