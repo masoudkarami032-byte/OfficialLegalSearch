@@ -13,7 +13,7 @@ import os
 import time
 import math
 
-from urllib.parse import urljoin, urlencode
+from urllib.parse import urljoin
 from html import unescape
 
 
@@ -29,10 +29,10 @@ SOURCE_NAME = 'سامانه ملی آرای قضایی پژوهشگاه قوه �
 
 PAGE_SIZE = 25
 
-QAVANIN_BASE = 'https://qavanin.ir'
+QAVANIN_BASE = 'https://nezamat.ir'
 QAVANIN_LIST = QAVANIN_BASE + '/'
 QAVANIN_SOURCE_ID = 'national_laws'
-QAVANIN_SOURCE_NAME = 'سامانه ملی قوانین و مقررات جمهوری اسلامی ایران'
+QAVANIN_SOURCE_NAME = 'نظامات؛ مجموعه تنقیحی قوانین و مقررات'
 QAVANIN_PAGE_SIZE = 10
 
 
@@ -107,7 +107,7 @@ def parse_query(q):
 
 def matches(text, query):
 
-    text = fa_to_en(norm(text))
+    text = norm(text)
 
     include, exclude = parse_query(query)
 
@@ -115,11 +115,11 @@ def matches(text, query):
         return False
 
     for item in include:
-        if fa_to_en(norm(item)) not in text:
+        if norm(item) not in text:
             return False
 
     for item in exclude:
-        if fa_to_en(norm(item)) in text:
+        if norm(item) in text:
             return False
 
     return True
@@ -947,246 +947,466 @@ def qavanin_get_with_retry(session, url, *, params=None, timeout=35, attempts=7)
 
 
 def qavanin_is_challenge(html):
-    """Detect qavanin.ir/Arvan transfer pages.
-
-    IMPORTANT: a challenge is an access failure, never a valid zero-result page.
-    """
-    raw = norm(BeautifulSoup(html or '', 'html.parser').get_text(' ', strip=True))
+    # Kept for compatibility with the old engine. Nezamat does not use
+    # the ArvanCloud challenge that blocked qavanin.ir from Render.
     lower = (html or '').lower()
     return (
         'transferring to the website' in lower
-        or 'در حال انتقال به سایت مورد نظر هستید' in raw
-        or ('arvancloud' in lower and 'transfer' in lower)
+        and 'arvancloud' in lower
     )
 
 
-def _qavanin_bool_params(search_title=True, search_text=False):
-    # ASP.NET MVC checkbox helpers submit checked=true followed by hidden=false.
-    params = []
-    if search_title:
-        params.append(('IsTitleSearch', 'true'))
-    params.append(('IsTitleSearch', 'false'))
-    if search_text:
-        params.append(('IsTextSearch', 'true'))
-    params.append(('IsTextSearch', 'false'))
-    return params
+def qavanin_search_page(
+    session,
+    query,
+    page=1,
+    search_title=True,
+    search_text=False
+):
+    """Fetch a Nezamat HTML search-results page (fallback path)."""
+    params = {
+        's': query,
+        'post_type': 'post'
+    }
+
+    url = QAVANIN_LIST if page <= 1 else urljoin(
+        QAVANIN_BASE,
+        f'/page/{int(page)}/'
+    )
+
+    response = session.get(
+        url,
+        params=params,
+        timeout=35,
+        allow_redirects=True
+    )
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or 'utf-8'
+
+    if qavanin_is_challenge(response.text):
+        raise RuntimeError('منبع قوانین صفحه امنیتی غیرقابل پردازش برگرداند.')
+
+    return response.text
 
 
-def _qavanin_search_params(query, page=1, size=100, search_title=True, search_text=False):
-    params = [('CAPTION', query), ('Zone', '')]
-    params.extend(_qavanin_bool_params(search_title, search_text))
-    params.extend([
-        ('_isLaw', 'false'), ('_isRegulation', 'false'),
-        ('_IsVote', 'false'), ('_isOpenion', 'false'),
-        # 3 = «بخشی از واژه» exactly as the official form.
-        ('SeachTextType', '3'),
-        ('fromApproveDate', ''), ('APPROVEDATE', ''),
-        ('IsTitleSubject', 'False'), ('IsMain', ''),
-        ('COMMANDNO', ''), ('fromCommandDate', ''), ('COMMANDDATE', ''),
-        ('NEWSPAPERNO', ''), ('fromNewspaperDate', ''), ('NEWSPAPERDATE', ''),
-        ('SortColumn', 'APPROVEDATE'), ('SortDesc', 'True'), ('Report_ID', ''),
-        ('PageNumber', str(max(1, int(page)))), ('page', str(max(1, int(page)))),
-        ('size', str(min(max(1, int(size)), 1000))),
-        ('txtZone', ''), ('txtSubjects', ''), ('txtExecutors', ''),
-        ('txtApprovers', ''), ('txtLawStatus', ''), ('txtLawTypes', '')
-    ])
-    return params
+def qavanin_rest_page(session, query=None, page=1, per_page=100):
+    """Enumerate Nezamat's real laws/posts collection page by page.
 
+    Diagnostic data from Nezamat confirms that the legal corpus is the
+    WordPress ``post`` collection (rest_base=posts) with about 41.9k records.
+    The user's query is intentionally NOT sent to WordPress; matching is done
+    locally so remote search ranking/candidate limits cannot truncate results.
+    """
+    url = urljoin(QAVANIN_BASE, '/wp-json/wp/v2/posts')
+    params = {
+        'page': max(1, int(page)),
+        'per_page': min(max(int(per_page), 1), 100),
+        'status': 'publish',
+        'orderby': 'date',
+        'order': 'desc',
+        '_fields': 'id,title,link'
+    }
+    response = qavanin_get_with_retry(
+        session, url, params=params, timeout=35, attempts=7
+    )
+    data = response.json()
 
-def _qavanin_get(session, url, *, params=None, timeout=45, attempts=3):
-    last = None
-    for attempt in range(1, attempts + 1):
+    items = []
+    seen = set()
+    for row in data if isinstance(data, list) else []:
+        href = (row.get('link') or '').strip()
+        raw_title = row.get('title') or ''
+        if isinstance(raw_title, dict):
+            raw_title = raw_title.get('rendered', '')
+        title = norm(
+            BeautifulSoup(unescape(str(raw_title)), 'html.parser')
+            .get_text(' ', strip=True)
+        )
+        if not href or not _same_nezamat_host(href):
+            continue
+        key = href.split('#', 1)[0].rstrip('/') + '/'
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({'url': key, 'title': title or 'قانون یا مقرره', 'subtype': 'post'})
+
+    def _header_int(name):
         try:
-            r = session.get(url, params=params, timeout=timeout, allow_redirects=True)
-            r.raise_for_status()
-            r.encoding = 'utf-8'
-            if qavanin_is_challenge(r.text):
-                raise RuntimeError(
-                    'qavanin.ir صفحه امنیتی/انتقال برگرداند؛ این پاسخ نتیجه جست‌وجو نیست.'
-                )
-            return r
-        except RuntimeError:
-            raise
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
-                requests.exceptions.ChunkedEncodingError, requests.exceptions.HTTPError) as exc:
-            last = exc
-            if attempt < attempts:
-                time.sleep(min(4, 0.8 * (2 ** (attempt - 1))))
-    raise last or RuntimeError('ارتباط با qavanin.ir برقرار نشد.')
+            return int(response.headers.get(name, '') or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return items, _header_int('X-WP-Total'), _header_int('X-WP-TotalPages')
+
+def _same_nezamat_host(url):
+    return bool(re.match(r'^https?://(?:www\.)?nezamat\.ir(?:/|$)', url, re.I))
 
 
-def _qavanin_int(text):
-    raw = fa_to_en(norm(text)).replace(',', '').replace('٬', '')
-    m = re.search(r'\d+', raw)
-    return int(m.group()) if m else 0
-
-
-def _qavanin_parse_search(html):
+def get_law_links(html):
+    """Extract document links from a Nezamat results page."""
     soup = BeautifulSoup(html, 'html.parser')
-    page_text = norm(soup.get_text(' ', strip=True))
-
-    total = 0
-    m = re.search(r'تعداد\s*یافته\s*ها\s*[:：]?\s*([0-9۰-۹٠-٩,٬]+)', page_text)
-    if m:
-        total = _qavanin_int(m.group(1))
-
     results = []
     seen = set()
-    for a in soup.select('a[href*="/Law/TreeText/"]'):
-        href = (a.get('href') or '').strip()
-        title = norm(a.get_text(' ', strip=True))
-        if not href or not title:
-            continue
-        url = urljoin(QAVANIN_BASE, href)
-        if url in seen:
-            continue
-        seen.add(url)
-        tr = a.find_parent('tr')
-        cells = [norm(td.get_text(' ', strip=True)) for td in tr.find_all('td')] if tr else []
-        approval_date = cells[2] if len(cells) >= 3 else ''
-        approver = cells[3] if len(cells) >= 4 else ''
-        results.append({
-            'url': url, 'title': title, 'approval_date': approval_date,
-            'approver': approver, 'source': QAVANIN_SOURCE_NAME
-        })
-    return results, total
+
+    # Prefer links inside article/result containers when present.
+    containers = soup.find_all(['article', 'main'])
+    roots = containers if containers else [soup]
+
+    for root in roots:
+        for a in root.find_all('a', href=True):
+            href = (a.get('href') or '').strip()
+            title = norm(a.get_text(' ', strip=True))
+            if not href or not title:
+                continue
+
+            url = urljoin(QAVANIN_BASE, href)
+            if not _same_nezamat_host(url):
+                continue
+
+            low = url.lower()
+            # Exclude listing, archive, category, tag, feed and utility links.
+            if any(x in low for x in (
+                '/page/', '/category/', '/tag/', '/author/', '/feed/',
+                '/wp-', '?s=', '#comment', '/comments/'
+            )):
+                continue
+            if url.rstrip('/') == QAVANIN_BASE.rstrip('/'):
+                continue
+
+            # Result titles are normally substantial. This also filters
+            # menu labels such as خانه / تماس / بعدی.
+            if len(title) < 8:
+                continue
+
+            key = url.split('#', 1)[0].rstrip('/')
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({'url': key + '/', 'title': title})
+
+    return results
 
 
-def qavanin_search_page(session, query, page=1, search_title=True, search_text=False, size=100):
-    r = _qavanin_get(
-        session, QAVANIN_LIST,
-        params=_qavanin_search_params(query, page, size, search_title, search_text)
+def extract_qavanin_total_results(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    page_text = norm(soup.get_text(' ', strip=True))
+    patterns = (
+        r'([0-9۰-۹,٬]+)\s*نتیجه',
+        r'تعداد\s*(?:نتایج|یافته[^ ]*)\s*[:：]?\s*([0-9۰-۹,٬]+)'
     )
-    return r.text, r.url
+    for pattern in patterns:
+        m = re.search(pattern, page_text)
+        if not m:
+            continue
+        value = fa_to_en(m.group(1)).replace(',', '').replace('٬', '')
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    return None
+
+
+def _metadata_value(text, labels):
+    for label in labels:
+        m = re.search(
+            re.escape(label) + r'\s*[:：]?\s*([^\n|]{1,120})',
+            text,
+            flags=re.I
+        )
+        if m:
+            value = norm(m.group(1))
+            # Stop at another common metadata label if the HTML collapsed
+            # several fields onto one line.
+            value = re.split(
+                r'\s+(?:تصویب|انتشار|شماره|دسته)\s*[:：]',
+                value,
+                maxsplit=1
+            )[0].strip()
+            return value
+    return ''
 
 
 def fetch_law(url, session):
-    r = _qavanin_get(session, url, timeout=45, attempts=3)
-    soup = BeautifulSoup(r.text, 'html.parser')
-    for tag in soup(['script', 'style', 'noscript', 'svg']):
+    response = qavanin_get_with_retry(
+        session, url, timeout=35, attempts=5
+    )
+    response.encoding = response.apparent_encoding or 'utf-8'
+
+    if qavanin_is_challenge(response.text):
+        raise RuntimeError('صفحه سند توسط لایه امنیتی قابل دریافت نیست.')
+
+    soup = BeautifulSoup(response.text, 'html.parser')
+    for tag in soup(['script', 'style', 'noscript', 'svg', 'form']):
         tag.decompose()
+
+    # Title: article h1 first, then document title.
     title = ''
-    for selector in ('h1', 'h2', '.law-title', '.title'):
-        node = soup.select_one(selector)
-        if node:
-            candidate = norm(node.get_text(' ', strip=True))
-            if candidate:
+    for selector in ('article h1', 'main h1', 'h1.entry-title', 'h1', 'h2.entry-title'):
+        h = soup.select_one(selector)
+        if h:
+            candidate = norm(h.get_text(' ', strip=True))
+            if candidate and candidate not in ('نظامات', 'جستجو'):
                 title = candidate
                 break
-    body = norm((soup.body or soup).get_text(' ', strip=True))
+    if not title and soup.title:
+        title = norm(soup.title.get_text(' ', strip=True)).split(' – ')[0]
+    if not title:
+        title = 'قانون یا مقرره'
+
+    # Prefer the article/main body instead of the whole page, so menus and
+    # sidebars do not pollute legal text or text-search matches.
+    content = (
+        soup.select_one('article .entry-content')
+        or soup.select_one('main .entry-content')
+        or soup.select_one('article')
+        or soup.select_one('main')
+        or soup.body
+        or soup
+    )
+    body = norm(content.get_text(' ', strip=True))
+    full_text = body
+
+    # Remove a repeated heading at the start of the body.
+    if title and body.startswith(title):
+        body = norm(body[len(title):])
+
+    # Trim obvious site footer material if it leaked into the content.
+    footer_position = len(body)
+    for marker in (
+        'دیدگاهتان را بنویسید', 'ارسال دیدگاه', 'تمامی حقوق',
+        '©', 'نظامات؛ مجموعه تنقیحی'
+    ):
+        pos = body.find(marker)
+        if pos > 100 and pos < footer_position:
+            footer_position = pos
+    body = norm(body[:footer_position])
+
+    meta_text = norm(soup.get_text(' ', strip=True))
+    approval_date = _metadata_value(meta_text, ('تصویب', 'تاریخ تصویب'))
+    publication_date = _metadata_value(meta_text, ('انتشار', 'تاریخ انتشار'))
+    document_number = _metadata_value(meta_text, ('شماره',))
+    category = _metadata_value(meta_text, ('دسته',))
+
     return {
-        'url': r.url, 'title': title or 'قانون یا مقرره', 'abstract': '',
-        'body': body, 'text': body, 'source': QAVANIN_SOURCE_NAME,
-        'approval_date': '', 'publication_date': '', 'document_number': '', 'category': ''
+        'url': response.url,
+        'title': title,
+        'abstract': '',
+        'body': body,
+        'text': full_text,
+        'source': QAVANIN_SOURCE_NAME,
+        'approval_date': approval_date,
+        'publication_date': publication_date,
+        'document_number': document_number,
+        'category': category
     }
 
 
+def _extract_named_section(text, start_markers, end_markers):
+    raw = norm(text)
+    starts = [(raw.find(m), m) for m in start_markers if raw.find(m) != -1]
+    if not starts:
+        return ''
+    p, m = min(starts, key=lambda x: x[0])
+    start = p + len(m)
+    end = len(raw)
+    for e in end_markers:
+        ep = raw.find(e, start)
+        if ep != -1 and ep < end:
+            end = ep
+    return norm(raw[start:end])
+
+
+def enrich_law_sections(law):
+    body = law.get('body', '') or ''
+    law['main_text'] = _extract_named_section(
+        body, ('متن مصوبه','متن قانون','متن مقرره','متن'),
+        ('تحقیق','پژوهش','تحلیل','توضیحات','اطلاعات تنقیحی','سوابق تنقیحی',
+         'تنقیح','تاریخچه','قوانین و مقررات مرتبط','مقررات مرتبط','اسناد مرتبط')
+    )
+    law['research_text'] = _extract_named_section(
+        body, ('تحقیق','پژوهش','تحلیل','توضیحات'),
+        ('اطلاعات تنقیحی','سوابق تنقیحی','تنقیح','تاریخچه',
+         'قوانین و مقررات مرتبط','مقررات مرتبط','اسناد مرتبط')
+    )
+    law['consolidation_text'] = _extract_named_section(
+        body, ('اطلاعات تنقیحی','سوابق تنقیحی','تنقیح','تاریخچه'),
+        ('قوانین و مقررات مرتبط','مقررات مرتبط','اسناد مرتبط')
+    )
+    law['related_text'] = _extract_named_section(
+        body, ('قوانین و مقررات مرتبط','مقررات مرتبط','اسناد مرتبط',
+               'منابع مرتبط','پیوندهای مرتبط'), ()
+    )
+    return law
+
+
 def law_matches(law, query, search_title, search_text):
-    # qavanin.ir itself is authoritative for candidate selection. This helper is
-    # retained for compatibility when inspecting a fetched document.
     selected = []
     if search_title:
         selected.append(law.get('title', ''))
     if search_text:
-        selected.append(law.get('body', ''))
+        selected.extend([
+            law.get('body', ''),
+            law.get('main_text', ''),
+            law.get('research_text', ''),
+            law.get('consolidation_text', ''),
+            law.get('related_text', '')
+        ])
     return matches(' '.join(selected), query)
 
 
 def law_matched_in(law, query, search_title, search_text):
     locations = []
-    if search_title:
+    if search_title and matches(law.get('title', ''), query):
         locations.append('عنوان')
     if search_text:
-        locations.append('متن قانون/مقرره')
+        checks = [
+            ('متن قانون/مقرره', law.get('main_text', '')),
+            ('تحقیق/پژوهش/تحلیل', law.get('research_text', '')),
+            ('اطلاعات تنقیحی/تاریخچه', law.get('consolidation_text', '')),
+            ('قوانین و مقررات مرتبط', law.get('related_text', ''))
+        ]
+        hit = False
+        for label, value in checks:
+            if value and matches(value, query):
+                locations.append(label)
+                hit = True
+        if not hit and matches(law.get('body', ''), query):
+            locations.append('متن کامل سند')
     return locations
 
 
 def qavanin_worker(jid, query, max_pages, search_title, search_text):
     job = JOBS[jid]
     session = make_qavanin_session()
-    page_size = 100
+
     try:
-        job['message'] = 'در حال ارسال جست‌وجو به سامانه ملی قوانین و مقررات...'
-        first_html, official_url = qavanin_search_page(
-            session, query, page=1, search_title=search_title,
-            search_text=search_text, size=page_size
+        job['message'] = 'در حال پیمایش مجموعه کامل قوانین و مقررات نظامات...'
+
+        # Enumerate the COMPLETE searchable index. The user query is matched
+        # locally so Nezamat's 100-candidate remote-search cap cannot truncate
+        # the universe of documents.
+        first_items, catalog_total, catalog_pages = qavanin_rest_page(
+            session, None, page=1, per_page=100
         )
-        first_items, official_total = _qavanin_parse_search(first_html)
 
-        # Guard against the dangerous failure mode seen before: an unfiltered
-        # catalogue page must not be reported as a legitimate search result.
-        if official_total > 100000 and query:
-            raise RuntimeError(
-                'qavanin.ir فیلتر جست‌وجو را اعمال نکرد و فهرست عمومی را برگرداند؛ '
-                'برای جلوگیری از نتیجه نادرست، عملیات متوقف شد.'
-            )
+        if not first_items:
+            job['status'] = 'done'
+            job['progress'] = 100
+            job['total_pages'] = 0
+            job['message'] = 'فهرست قابل جست‌وجوی نظامات خالی برگردانده شد.'
+            return
 
-        total_pages = max(1, (official_total + page_size - 1) // page_size) if official_total else 1
-        total_pages = min(total_pages, max_pages)
-        job['official_results'] = official_total
-        job['site_total_pages'] = total_pages
-        job['total_pages'] = total_pages
-        job['official_url'] = official_url
-
-        if official_total and not first_items:
-            raise RuntimeError('qavanin.ir تعداد نتیجه اعلام کرد اما ردیف‌های نتیجه قابل استخراج نبودند.')
+        pages_to_scan = catalog_pages or max_pages
+        job['site_total_pages'] = catalog_pages
+        job['total_pages'] = pages_to_scan
+        job['official_results'] = catalog_total
 
         seen = set()
-        for page in range(1, total_pages + 1):
+
+        for page in range(1, pages_to_scan + 1):
             if job['cancel']:
                 break
+
             job['current_page'] = page
+            job['message'] = (
+                f'در حال بررسی صفحه {page} از {pages_to_scan} فهرست کامل نظامات...'
+            )
+
             if page == 1:
                 items = first_items
             else:
-                html, _ = qavanin_search_page(
-                    session, query, page=page, search_title=search_title,
-                    search_text=search_text, size=page_size
-                )
-                items, _ = _qavanin_parse_search(html)
-
-            for item in items:
-                if job['cancel']:
-                    break
-                if item['url'] in seen:
-                    continue
-                seen.add(item['url'])
-                job['checked'] += 1
-
-                law = dict(item)
-                law['abstract'] = ''
-                law['body'] = ''
-                law['text'] = ''
-                law['publication_date'] = ''
-                law['document_number'] = ''
-                law['category'] = item.get('approver', '')
-                law['matched_in'] = ([] if not search_title else ['عنوان']) + ([] if not search_text else ['متن قانون/مقرره'])
-
-                # Fetch the document body for text searches / later reporting.
-                # A detail-page failure does not erase a valid official hit.
-                if search_text:
-                    try:
-                        detail = fetch_law(item['url'], session)
-                        if detail.get('title') and detail['title'] != 'قانون یا مقرره':
-                            law['title'] = detail['title']
-                        law['body'] = detail.get('body', '')
-                        law['text'] = detail.get('text', '')
-                    except Exception:
-                        job['failed_items'] += 1
-
-                job['results'].append(law)
-                job['found'] = len(job['results'])
-                if official_total:
-                    job['progress'] = min(99, round(job['checked'] / official_total * 100, 1))
-                job['message'] = (
-                    f'در حال دریافت نتایج رسمی: {job["checked"]} از {official_total or "?"}'
+                items, _, _ = qavanin_rest_page(
+                    session, None, page=page, per_page=100
                 )
 
-            job['completed_pages'] = page
             if not items:
                 break
 
+            new_on_page = 0
+            for item in items:
+                if job['cancel']:
+                    break
+
+                url = item['url']
+                if url in seen:
+                    continue
+                seen.add(url)
+                new_on_page += 1
+                job['checked'] += 1
+
+                # Publish item-level progress. The UI may poll less frequently,
+                # but this counter proves that every record in the 100-item
+                # catalogue page is visited, not merely record 100/200/300.
+                if catalog_total:
+                    job['progress'] = min(99, round(job['checked'] / catalog_total * 100, 1))
+                job['message'] = (
+                    f'در حال بررسی سند {job["checked"]:,} از '
+                    f'{catalog_total or "?"}؛ صفحه {page} از {pages_to_scan}؛ '
+                    f'{job["found"]} نتیجه منطبق'
+                )
+
+                # For title-only searches the REST index already gives us the
+                # title. Avoid downloading every full document; fetch only a
+                # title candidate. For text searches we must inspect the body.
+                title_hit = search_title and matches(item.get('title', ''), query)
+                if search_title and not search_text and not title_hit:
+                    continue
+
+                try:
+                    law = fetch_law(url, session)
+                    # Keep the index title as a fallback AND as an additional
+                    # title-match source; page templates sometimes expose a
+                    # different heading than the search index.
+                    index_title = item.get('title', '')
+                    if law['title'] == 'قانون یا مقرره' and index_title:
+                        law['title'] = index_title
+
+                    law = enrich_law_sections(law)
+                    page_title_hit = search_title and matches(law.get('title', ''), query)
+                    effective_title_hit = title_hit or page_title_hit
+                    text_hit = search_text and law_matches(law, query, False, True)
+
+                    if effective_title_hit or text_hit:
+                        locations = []
+                        if effective_title_hit:
+                            locations.append('عنوان')
+                        if search_text:
+                            for loc in law_matched_in(law, query, False, True):
+                                if loc not in locations:
+                                    locations.append(loc)
+                        law['matched_in'] = locations
+                        job['results'].append(law)
+                        job['found'] = len(job['results'])
+                except Exception:
+                    job['failed_items'] += 1
+
+            job['completed_pages'] = page
+            job['progress'] = min(99, round(job['checked'] / max(1, catalog_total) * 100, 1)) if catalog_total else min(99, round(page / max(1, pages_to_scan) * 100, 1))
+            job['message'] = (
+                f'صفحه {page} بررسی شد؛ {job["checked"]} سند بررسی و '
+                f'{job["found"]} نتیجه منطبق یافت شده است.'
+            )
+
+            if new_on_page == 0:
+                break
+            # Be polite to Nezamat and reduce long-run connection resets.
+            time.sleep(0.20)
+
+        qnrm = norm(query)
+
+        def _law_rank(item):
+            t = norm(item.get('title', ''))
+            if t == qnrm:
+                return (0, len(t))
+            if t.startswith(qnrm):
+                return (1, len(t))
+            if qnrm in t:
+                return (2, len(t))
+            return (3, len(t))
+
+        job['results'].sort(key=_law_rank)
         job['found'] = len(job['results'])
+
         if job['cancel']:
             job['status'] = 'cancelled'
             job['message'] = 'جست‌وجو به درخواست کاربر متوقف شد.'
@@ -1194,12 +1414,22 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
             job['status'] = 'done'
             job['progress'] = 100
             job['message'] = (
-                f'جست‌وجوی رسمی qavanin.ir تکمیل شد؛ '
-                f'{official_total} یافته رسمی و {job["found"]} نتیجه دریافت شد.'
+                f'جست‌وجوی قوانین تکمیل شد. {job["checked"]} سند بررسی شد و '
+                f'{job["found"]} نتیجه منطبق یافت شد.'
             )
+
+    except requests.exceptions.Timeout:
+        job['status'] = 'error'
+        job['message'] = 'ارتباط با منبع قوانین بیش از حد طول کشید. دوباره تلاش کنید.'
+    except requests.exceptions.RequestException as e:
+        job['status'] = 'error'
+        job['message'] = (
+            f'ارتباط با نظامات پس از چند تلاش قطع شد. جست‌وجو ناقص است؛ '
+            f'{job.get("checked", 0)} سند تا این نقطه بررسی شده است. خطا: {e}'
+        )
     except Exception as e:
         job['status'] = 'error'
-        job['message'] = 'خطا در جست‌وجوی رسمی قوانین و مقررات: ' + str(e)
+        job['message'] = 'خطا در جست‌وجوی قوانین و مقررات: ' + str(e)
 
 
 # =========================================================
@@ -1904,23 +2134,29 @@ def qavanin_diagnostic_route():
 
 @app.post('/api/qavanin/search')
 def start_qavanin():
-    """Create a browser-assisted qavanin.ir search job.
-
-    qavanin.ir blocks server-to-server requests from Render.  The search is
-    therefore opened in the user's browser; the companion Chrome extension
-    reads the official result pages and posts the extracted rows back here.
-    """
     data = request.get_json(force=True)
+
     query = (data.get('query') or '').strip()
     search_title = bool(data.get('search_title', True))
     search_text = bool(data.get('search_text', False))
 
     if not query:
         return jsonify(error='عبارت جست‌وجو الزامی است'), 400
+
     if not (search_title or search_text):
-        return jsonify(error='حداقل یکی از گزینه‌های عنوان یا متن قانون را انتخاب کنید.'), 400
+        return jsonify(
+            error='حداقل یکی از گزینه‌های عنوان یا متن قانون را انتخاب کنید.'
+        ), 400
+
+    try:
+        max_pages = int(data.get('max_pages', 1100))
+    except Exception:
+        max_pages = 1100
+
+    max_pages = min(max(max_pages, 1), 1100)
 
     jid = str(uuid.uuid4())
+
     JOBS[jid] = {
         'job_id': jid,
         'source_id': QAVANIN_SOURCE_ID,
@@ -1929,7 +2165,7 @@ def start_qavanin():
         'search_title': search_title,
         'search_abstract': False,
         'search_text': search_text,
-        'status': 'waiting_browser',
+        'status': 'running',
         'cancel': False,
         'checked': 0,
         'found': 0,
@@ -1941,130 +2177,25 @@ def start_qavanin():
         'official_results': None,
         'progress': 0,
         'results': [],
-        'message': 'صفحه رسمی qavanin.ir در مرورگر باز می‌شود؛ در انتظار دریافت نتایج رسمی...'
+        'message': 'جست‌وجوی قوانین آغاز شد.'
     }
 
-    # Keep the exact ASP.NET MVC checkbox convention used by qavanin.ir.
-    params = _qavanin_search_params(
-        query, page=1, size=1000,
-        search_title=search_title, search_text=search_text
-    )
-    params.append(('bridge_job', jid))
-    params.append(('bridge_target', request.host_url.rstrip('/')))
-    browser_url = QAVANIN_LIST + '?' + urlencode(params, doseq=True)
+    threading.Thread(
+        target=qavanin_worker,
+        args=(
+            jid,
+            query,
+            max_pages,
+            search_title,
+            search_text
+        ),
+        daemon=True
+    ).start()
 
     return jsonify(
         job_id=jid,
-        source_id=QAVANIN_SOURCE_ID,
-        browser_url=browser_url,
-        browser_bridge=True
+        source_id=QAVANIN_SOURCE_ID
     )
-
-
-@app.route('/api/qavanin/browser-import/<jid>', methods=['POST', 'OPTIONS'])
-def qavanin_browser_import(jid):
-    """Receive official qavanin.ir rows collected inside the user's browser."""
-    if request.method == 'OPTIONS':
-        r = jsonify(ok=True)
-        r.headers['Access-Control-Allow-Origin'] = '*'
-        r.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        r.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        return r
-
-    job = JOBS.get(jid)
-    if not job or job.get('source_id') != QAVANIN_SOURCE_ID:
-        return jsonify(error='شناسه جست‌وجوی قوانین معتبر نیست.'), 404
-
-    data = request.get_json(force=True, silent=True) or {}
-    if data.get('error'):
-        job['status'] = 'error'
-        job['message'] = 'خطا در دریافت نتایج از مرورگر: ' + str(data.get('error'))
-        r = jsonify(ok=False, error=job['message'])
-        r.headers['Access-Control-Allow-Origin'] = '*'
-        return r, 400
-
-    try:
-        official_total = int(data.get('official_total') or 0)
-    except Exception:
-        official_total = 0
-    try:
-        total_pages = int(data.get('total_pages') or 1)
-    except Exception:
-        total_pages = 1
-
-    # Safety guard: this is the unfiltered catalogue, not a legitimate search.
-    if official_total > 100000 and job.get('query'):
-        job['status'] = 'error'
-        job['message'] = (
-            'qavanin.ir فیلتر جست‌وجو را اعمال نکرد و فهرست عمومی را برگرداند؛ '
-            'نتیجه برای جلوگیری از ورود داده نادرست رد شد.'
-        )
-        r = jsonify(ok=False, error=job['message'])
-        r.headers['Access-Control-Allow-Origin'] = '*'
-        return r, 400
-
-    incoming = data.get('results') or []
-    clean = []
-    seen = set()
-    for item in incoming:
-        if not isinstance(item, dict):
-            continue
-        url = (item.get('url') or '').strip()
-        title = norm(item.get('title') or '')
-        if not url or not title or not url.startswith(QAVANIN_BASE):
-            continue
-        if url in seen:
-            continue
-        seen.add(url)
-        body = norm(item.get('body') or '')
-        clean.append({
-            'url': url,
-            'title': title,
-            'abstract': '',
-            'body': body,
-            'text': body,
-            'source': QAVANIN_SOURCE_NAME,
-            'approval_date': norm(item.get('approval_date') or ''),
-            'publication_date': '',
-            'document_number': '',
-            'category': norm(item.get('approver') or ''),
-            'approver': norm(item.get('approver') or ''),
-            'matched_in': ([] if not job.get('search_title') else ['عنوان']) +
-                          ([] if not job.get('search_text') else ['متن قانون/مقرره'])
-        })
-
-    # If the official page says N hits, do not silently accept a partial import.
-    if official_total and len(clean) < official_total:
-        job['status'] = 'error'
-        job['checked'] = len(clean)
-        job['found'] = len(clean)
-        job['official_results'] = official_total
-        job['results'] = clean
-        job['message'] = (
-            f'qavanin.ir تعداد {official_total} یافته اعلام کرد، اما مرورگر فقط '
-            f'{len(clean)} نتیجه را منتقل کرد؛ نتیجه ناقص است.'
-        )
-        r = jsonify(ok=False, error=job['message'])
-        r.headers['Access-Control-Allow-Origin'] = '*'
-        return r, 400
-
-    job['results'] = clean
-    job['checked'] = len(clean)
-    job['found'] = len(clean)
-    job['official_results'] = official_total or len(clean)
-    job['current_page'] = total_pages
-    job['completed_pages'] = total_pages
-    job['total_pages'] = total_pages
-    job['site_total_pages'] = total_pages
-    job['progress'] = 100
-    job['status'] = 'done'
-    job['message'] = (
-        f'جست‌وجوی رسمی qavanin.ir تکمیل شد؛ '
-        f'{job["official_results"]} یافته رسمی دریافت شد.'
-    )
-    r = jsonify(ok=True, found=len(clean), official_total=job['official_results'])
-    r.headers['Access-Control-Allow-Origin'] = '*'
-    return r
 
 
 @app.get('/api/status/<jid>')
