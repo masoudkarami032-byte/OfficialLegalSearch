@@ -752,18 +752,21 @@ def official_search(
         ('SortDesc', 'True')
     )
 
-    response = session.post(
+        response = session.post(
         LIST,
         data=payload,
         timeout=30,
         allow_redirects=True
-)
-        response.raise_for_status()
+    )
+
+    response.raise_for_status()
 
     response.encoding = (
         response.apparent_encoding
         or 'utf-8'
     )
+
+    return response.text
 
     return response.text
 
