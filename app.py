@@ -28,11 +28,11 @@ SOURCE_NAME = 'سامانه ملی آرای قضایی پژوهشگاه قوه �
 
 PAGE_SIZE = 25
 
-QAVANIN_BASE = 'https://qavanin.ir'
+QAVANIN_BASE = 'https://nezamat.ir'
 QAVANIN_LIST = QAVANIN_BASE + '/'
 QAVANIN_SOURCE_ID = 'national_laws'
-QAVANIN_SOURCE_NAME = 'سامانه ملی قوانین و مقررات جمهوری اسلامی ایران'
-QAVANIN_PAGE_SIZE = 25
+QAVANIN_SOURCE_NAME = 'نظامات؛ مجموعه تنقیحی قوانین و مقررات'
+QAVANIN_PAGE_SIZE = 10
 
 
 # =========================================================
@@ -877,135 +877,125 @@ def matched_in(
 
 
 # =========================================================
-# QAVANIN.IR - OFFICIAL LAWS ENGINE
+# NEZAMAT.IR - LAWS AND REGULATIONS ENGINE
+# The public route name /api/qavanin/search is kept unchanged so
+# the existing index.html continues to work without modification.
 # =========================================================
 
 def make_qavanin_session():
     session = requests.Session()
     session.headers.update({
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+        'User-Agent': (
+            'Mozilla/5.0 (Linux; Android 14) '
             'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/153.0.0.0 Safari/537.36',
-        'Accept':
-            'text/html,application/xhtml+xml,application/xml;'
-            'q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language':
-            'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Upgrade-Insecure-Requests': '1',
-        'Referer': QAVANIN_LIST
+            'Chrome/153.0.0.0 Mobile Safari/537.36'
+        ),
+        'Accept': (
+            'text/html,application/xhtml+xml,application/xml;q=0.9,'
+            'image/avif,image/webp,*/*;q=0.8'
+        ),
+        'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.7,en;q=0.6',
+        'Referer': QAVANIN_LIST,
+        'Connection': 'keep-alive'
     })
     return session
 
 
 def qavanin_is_challenge(html):
+    # Kept for compatibility with the old engine. Nezamat does not use
+    # the ArvanCloud challenge that blocked qavanin.ir from Render.
     lower = (html or '').lower()
-    markers = (
-        'transferring to the website',
-        'error-section--waiting',
-        'istehrantimezone',
-        'arvancloud'
+    return (
+        'transferring to the website' in lower
+        and 'arvancloud' in lower
     )
-    return any(x in lower for x in markers)
 
 
-def qavanin_search_page(session, query, page=1, search_title=True, search_text=False):
-    params = [
-        ('CAPTION', query),
-        ('Zone', ''),
-    ]
+def qavanin_search_page(
+    session,
+    query,
+    page=1,
+    search_title=True,
+    search_text=False
+):
+    """Fetch a Nezamat search-results page.
 
-    if search_title:
-        params.append(('IsTitleSearch', 'true'))
-    params.append(('IsTitleSearch', 'false'))
+    Nezamat is WordPress-based and accepts the standard `s` search
+    parameter.  `post_type=post` prevents unrelated WordPress objects
+    from entering the result set.  We still re-check every fetched
+    document locally with law_matches(), so the user's title/text choice
+    and AND/NOT syntax remain authoritative.
+    """
+    params = {
+        's': query,
+        'post_type': 'post'
+    }
 
-    if search_text:
-        params.append(('IsTextSearch', 'true'))
-    params.append(('IsTextSearch', 'false'))
-
-    params.extend([
-        ('_isLaw', 'false'),
-        ('_isRegulation', 'false'),
-        ('_IsVote', 'false'),
-        ('_isOpenion', 'false'),
-        ('SeachTextType', '3'),
-        ('fromApproveDate', ''),
-        ('APPROVEDATE', ''),
-        ('IsTitleSubject', 'False'),
-        ('IsMain', ''),
-        ('COMMANDNO', ''),
-        ('fromCommandDate', ''),
-        ('COMMANDDATE', ''),
-        ('NEWSPAPERNO', ''),
-        ('fromNewspaperDate', ''),
-        ('NEWSPAPERDATE', ''),
-        ('SortColumn', 'APPROVEDATE'),
-        ('SortDesc', 'True'),
-        ('Report_ID', ''),
-        ('PageNumber', str(page)),
-        ('page', str(page)),
-        ('size', str(QAVANIN_PAGE_SIZE)),
-        ('txtZone', ''),
-        ('txtSubjects', ''),
-        ('txtExecutors', ''),
-        ('txtApprovers', ''),
-        ('txtLawStatus', ''),
-        ('txtLawTypes', ''),
-    ])
+    url = QAVANIN_LIST if page <= 1 else urljoin(
+        QAVANIN_BASE,
+        f'/page/{int(page)}/'
+    )
 
     response = session.get(
-        QAVANIN_LIST,
+        url,
         params=params,
-        timeout=30,
+        timeout=35,
         allow_redirects=True
     )
     response.raise_for_status()
     response.encoding = response.apparent_encoding or 'utf-8'
 
     if qavanin_is_challenge(response.text):
-        raise RuntimeError(
-            'سامانه قوانین به این سرور صفحه امنیتی ArvanCloud برگرداند.'
-        )
+        raise RuntimeError('منبع قوانین صفحه امنیتی غیرقابل پردازش برگرداند.')
 
     return response.text
 
 
+def _same_nezamat_host(url):
+    return bool(re.match(r'^https?://(?:www\.)?nezamat\.ir(?:/|$)', url, re.I))
+
+
 def get_law_links(html):
+    """Extract document links from a Nezamat results page."""
     soup = BeautifulSoup(html, 'html.parser')
     results = []
     seen = set()
 
-    for a in soup.find_all('a', href=True):
-        href = (a.get('href') or '').strip()
-        href_lower = href.lower()
+    # Prefer links inside article/result containers when present.
+    containers = soup.find_all(['article', 'main'])
+    roots = containers if containers else [soup]
 
-        # Qavanin document links are under /Law/.
-        if '/law/' not in href_lower:
-            continue
+    for root in roots:
+        for a in root.find_all('a', href=True):
+            href = (a.get('href') or '').strip()
+            title = norm(a.get_text(' ', strip=True))
+            if not href or not title:
+                continue
 
-        # Ignore obvious navigation/search/static links.
-        if any(x in href_lower for x in (
-            '/law/index',
-            '/law/search',
-            'javascript:',
-            '#'
-        )):
-            continue
+            url = urljoin(QAVANIN_BASE, href)
+            if not _same_nezamat_host(url):
+                continue
 
-        url = urljoin(QAVANIN_BASE, href)
+            low = url.lower()
+            # Exclude listing, archive, category, tag, feed and utility links.
+            if any(x in low for x in (
+                '/page/', '/category/', '/tag/', '/author/', '/feed/',
+                '/wp-', '?s=', '#comment', '/comments/'
+            )):
+                continue
+            if url.rstrip('/') == QAVANIN_BASE.rstrip('/'):
+                continue
 
-        if url in seen:
-            continue
+            # Result titles are normally substantial. This also filters
+            # menu labels such as خانه / تماس / بعدی.
+            if len(title) < 8:
+                continue
 
-        title = norm(a.get_text(' ', strip=True))
-        if not title:
-            continue
-
-        seen.add(url)
-        results.append({
-            'url': url,
-            'title': title
-        })
+            key = url.split('#', 1)[0].rstrip('/')
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({'url': key + '/', 'title': title})
 
     return results
 
@@ -1013,153 +1003,171 @@ def get_law_links(html):
 def extract_qavanin_total_results(html):
     soup = BeautifulSoup(html, 'html.parser')
     page_text = norm(soup.get_text(' ', strip=True))
-
-    patterns = [
-        r'تعداد\s*یافته\s*ها\s*[:：]?\s*([0-9۰-۹,٬]+)',
-        r'تعداد\s*یافته‌ها\s*[:：]?\s*([0-9۰-۹,٬]+)',
-        r'تعداد\s*نتایج\s*[:：]?\s*([0-9۰-۹,٬]+)'
-    ]
-
+    patterns = (
+        r'([0-9۰-۹,٬]+)\s*نتیجه',
+        r'تعداد\s*(?:نتایج|یافته[^ ]*)\s*[:：]?\s*([0-9۰-۹,٬]+)'
+    )
     for pattern in patterns:
         m = re.search(pattern, page_text)
         if not m:
             continue
-
         value = fa_to_en(m.group(1)).replace(',', '').replace('٬', '')
         try:
             return int(value)
         except ValueError:
             pass
-
     return None
+
+
+def _metadata_value(text, labels):
+    for label in labels:
+        m = re.search(
+            re.escape(label) + r'\s*[:：]?\s*([^\n|]{1,120})',
+            text,
+            flags=re.I
+        )
+        if m:
+            value = norm(m.group(1))
+            # Stop at another common metadata label if the HTML collapsed
+            # several fields onto one line.
+            value = re.split(
+                r'\s+(?:تصویب|انتشار|شماره|دسته)\s*[:：]',
+                value,
+                maxsplit=1
+            )[0].strip()
+            return value
+    return ''
 
 
 def fetch_law(url, session):
     response = session.get(
         url,
-        timeout=30,
+        timeout=35,
         allow_redirects=True
     )
     response.raise_for_status()
     response.encoding = response.apparent_encoding or 'utf-8'
 
     if qavanin_is_challenge(response.text):
-        raise RuntimeError(
-            'صفحه قانون توسط لایه امنیتی ArvanCloud مسدود شد.'
-        )
+        raise RuntimeError('صفحه سند توسط لایه امنیتی قابل دریافت نیست.')
 
     soup = BeautifulSoup(response.text, 'html.parser')
-
-    for tag in soup(['script', 'style', 'noscript']):
+    for tag in soup(['script', 'style', 'noscript', 'svg', 'form']):
         tag.decompose()
 
-    full_text = norm(soup.get_text(' ', strip=True))
-
+    # Title: article h1 first, then document title.
     title = ''
-    for selector in ('h1', 'h2', 'h3'):
-        h = soup.find(selector)
+    for selector in ('article h1', 'main h1', 'h1.entry-title', 'h1', 'h2.entry-title'):
+        h = soup.select_one(selector)
         if h:
             candidate = norm(h.get_text(' ', strip=True))
-            if candidate:
+            if candidate and candidate not in ('نظامات', 'جستجو'):
                 title = candidate
                 break
-
+    if not title and soup.title:
+        title = norm(soup.title.get_text(' ', strip=True)).split(' – ')[0]
     if not title:
         title = 'قانون یا مقرره'
 
-    body = full_text
+    # Prefer the article/main body instead of the whole page, so menus and
+    # sidebars do not pollute legal text or text-search matches.
+    content = (
+        soup.select_one('article .entry-content')
+        or soup.select_one('main .entry-content')
+        or soup.select_one('article')
+        or soup.select_one('main')
+        or soup.body
+        or soup
+    )
+    body = norm(content.get_text(' ', strip=True))
+    full_text = body
 
-    # Remove common site-navigation material when a recognizable
-    # document-text marker is available.
-    starts = [
-        'متن مصوبه',
-        'متن قانون',
-        'متن مقرره',
-        'ماده 1',
-        'ماده ۱'
-    ]
-    positions = [body.find(x) for x in starts if body.find(x) != -1]
-    if positions:
-        body = body[min(positions):]
+    # Remove a repeated heading at the start of the body.
+    if title and body.startswith(title):
+        body = norm(body[len(title):])
+
+    # Trim obvious site footer material if it leaked into the content.
+    footer_position = len(body)
+    for marker in (
+        'دیدگاهتان را بنویسید', 'ارسال دیدگاه', 'تمامی حقوق',
+        '©', 'نظامات؛ مجموعه تنقیحی'
+    ):
+        pos = body.find(marker)
+        if pos > 100 and pos < footer_position:
+            footer_position = pos
+    body = norm(body[:footer_position])
+
+    meta_text = norm(soup.get_text(' ', strip=True))
+    approval_date = _metadata_value(meta_text, ('تصویب', 'تاریخ تصویب'))
+    publication_date = _metadata_value(meta_text, ('انتشار', 'تاریخ انتشار'))
+    document_number = _metadata_value(meta_text, ('شماره',))
+    category = _metadata_value(meta_text, ('دسته',))
 
     return {
-        'url': url,
+        'url': response.url,
         'title': title,
         'abstract': '',
-        'body': norm(body),
+        'body': body,
         'text': full_text,
-        'source': QAVANIN_SOURCE_NAME
+        'source': QAVANIN_SOURCE_NAME,
+        'approval_date': approval_date,
+        'publication_date': publication_date,
+        'document_number': document_number,
+        'category': category
     }
 
 
 def law_matches(law, query, search_title, search_text):
     selected = []
-
     if search_title:
         selected.append(law.get('title', ''))
-
     if search_text:
         selected.append(law.get('body', ''))
-
     return matches(' '.join(selected), query)
 
 
 def law_matched_in(law, query, search_title, search_text):
     locations = []
-
     if search_title and matches(law.get('title', ''), query):
         locations.append('عنوان')
-
     if search_text and matches(law.get('body', ''), query):
         locations.append('متن قانون')
-
     return locations
 
 
-def qavanin_worker(
-    jid,
-    query,
-    max_pages,
-    search_title,
-    search_text
-):
+def qavanin_worker(jid, query, max_pages, search_title, search_text):
     job = JOBS[jid]
     session = make_qavanin_session()
 
     try:
-        job['message'] = 'در حال جست‌وجو در سامانه ملی قوانین و مقررات...'
+        job['message'] = 'در حال جست‌وجوی قوانین و مقررات در نظامات...'
 
         first_html = qavanin_search_page(
-            session,
-            query,
-            page=1,
+            session, query, page=1,
             search_title=search_title,
             search_text=search_text
         )
-
         first_items = get_law_links(first_html)
-        official_total = extract_qavanin_total_results(first_html)
+        reported_total = extract_qavanin_total_results(first_html)
 
         if not first_items:
             job['status'] = 'done'
             job['progress'] = 100
             job['total_pages'] = 0
-            job['message'] = 'برای این عبارت نتیجه‌ای در سامانه قوانین یافت نشد.'
+            job['message'] = 'برای این عبارت نتیجه‌ای در منبع قوانین یافت نشد.'
             return
 
-        if official_total is not None:
-            real_total_pages = max(
-                1,
-                math.ceil(official_total / QAVANIN_PAGE_SIZE)
-            )
+        # Search engines may not publish an exact count. In that case we
+        # continue until an empty/repeated page, capped by the user's limit.
+        if reported_total is not None:
+            estimated_pages = max(1, math.ceil(reported_total / QAVANIN_PAGE_SIZE))
+            pages_to_scan = min(estimated_pages, max_pages)
         else:
-            real_total_pages = max_pages
-
-        pages_to_scan = min(real_total_pages, max_pages)
+            pages_to_scan = max_pages
 
         job['total_pages'] = pages_to_scan
-        job['site_total_pages'] = real_total_pages
-        job['official_results'] = official_total
+        job['site_total_pages'] = pages_to_scan
+        job['official_results'] = reported_total
 
         seen = set()
         previous_urls = None
@@ -1169,107 +1177,81 @@ def qavanin_worker(
                 break
 
             job['current_page'] = page
-            job['message'] = (
-                f'در حال بررسی صفحه {page} از {pages_to_scan} قوانین'
+            job['message'] = f'در حال بررسی صفحه {page} قوانین و مقررات...'
+
+            html = first_html if page == 1 else qavanin_search_page(
+                session, query, page=page,
+                search_title=search_title,
+                search_text=search_text
             )
-
-            if page == 1:
-                html = first_html
-            else:
-                html = qavanin_search_page(
-                    session,
-                    query,
-                    page=page,
-                    search_title=search_title,
-                    search_text=search_text
-                )
-
             items = get_law_links(html)
             current_urls = {x['url'] for x in items}
 
             if not items:
                 break
-
-            if (
-                page > 1
-                and previous_urls is not None
-                and current_urls == previous_urls
-            ):
-                job['status'] = 'error'
-                job['message'] = (
-                    f'صفحه {page} همان نتایج صفحه قبلی را برگرداند؛ '
-                    'صفحه‌بندی سامانه قوانین صحیح انجام نشد.'
-                )
-                return
-
+            if page > 1 and previous_urls is not None and current_urls == previous_urls:
+                break
             previous_urls = current_urls
 
+            new_on_page = 0
             for item in items:
                 if job['cancel']:
                     break
-
                 url = item['url']
                 if url in seen:
                     continue
-
                 seen.add(url)
+                new_on_page += 1
                 job['checked'] += 1
 
                 try:
                     law = fetch_law(url, session)
-
-                    # Prefer the result-list title when the document page
-                    # does not expose a useful heading.
                     if law['title'] == 'قانون یا مقرره':
                         law['title'] = item['title']
 
-                    if law_matches(
-                        law,
-                        query,
-                        search_title,
-                        search_text
-                    ):
+                    if law_matches(law, query, search_title, search_text):
                         law['matched_in'] = law_matched_in(
-                            law,
-                            query,
-                            search_title,
-                            search_text
+                            law, query, search_title, search_text
                         )
                         job['results'].append(law)
                         job['found'] = len(job['results'])
-
                 except Exception:
                     job['failed_items'] += 1
 
             job['completed_pages'] = page
-            job['progress'] = min(
-                99,
-                round(page / pages_to_scan * 100, 1)
-            )
+            if reported_total is not None:
+                job['progress'] = min(99, round(page / pages_to_scan * 100, 1))
+            else:
+                # Unknown final page: progress is intentionally conservative.
+                job['progress'] = min(95, round(page / max(1, max_pages) * 95, 1))
             job['message'] = (
-                f'صفحه {page} از {pages_to_scan} قوانین بررسی شد.'
+                f'صفحه {page} بررسی شد؛ {job["found"]} نتیجه منطبق یافت شده است.'
             )
 
+            if new_on_page == 0:
+                break
             time.sleep(0.15)
 
         if job['cancel']:
             job['status'] = 'cancelled'
             job['message'] = 'جست‌وجو به درخواست کاربر متوقف شد.'
-        elif job['status'] == 'running':
+        else:
             job['status'] = 'done'
             job['progress'] = 100
             job['message'] = (
-                f'جست‌وجوی قوانین تکمیل شد. '
-                f'{job["checked"]} سند بررسی شد و '
+                f'جست‌وجوی قوانین تکمیل شد. {job["checked"]} سند بررسی شد و '
                 f'{job["found"]} نتیجه منطبق یافت شد.'
             )
 
+    except requests.exceptions.Timeout:
+        job['status'] = 'error'
+        job['message'] = 'ارتباط با منبع قوانین بیش از حد طول کشید. دوباره تلاش کنید.'
+    except requests.exceptions.RequestException as e:
+        job['status'] = 'error'
+        job['message'] = 'خطا در ارتباط با منبع قوانین: ' + str(e)
     except Exception as e:
         job['status'] = 'error'
-        job['message'] = (
-            'خطا در ارتباط با سامانه ملی قوانین و مقررات: '
-            + str(e)
-        )
+        job['message'] = 'خطا در جست‌وجوی قوانین و مقررات: ' + str(e)
 
 
 # =========================================================
@@ -1622,171 +1604,68 @@ def rtl(paragraph):
 
 
 def make_doc(jid):
-
     job = JOBS[jid]
-
     doc = Document()
+    is_laws = job.get('source_id') == QAVANIN_SOURCE_ID
 
-    rtl(
-        doc.add_heading(
-            clean_xml_text(
-                'آرای قضایی یافت‌شده'
-            ),
-            0
-        )
-    )
-
-    rtl(
-        doc.add_paragraph(
-            clean_xml_text(
-                f"منبع: "
-                f"{job['source_name']}"
-            )
-        )
-    )
-
-    rtl(
-        doc.add_paragraph(
-            clean_xml_text(
-                f"عبارت جست‌وجو: "
-                f"{job['query']}"
-            )
-        )
-    )
+    rtl(doc.add_heading(
+        clean_xml_text('قوانین و مقررات یافت‌شده' if is_laws else 'آرای قضایی یافت‌شده'),
+        0
+    ))
+    rtl(doc.add_paragraph(clean_xml_text(f"منبع: {job['source_name']}")))
+    rtl(doc.add_paragraph(clean_xml_text(f"عبارت جست‌وجو: {job['query']}")))
 
     places = []
-
     if job['search_title']:
-        places.append(
-            'عنوان'
-        )
-
+        places.append('عنوان')
     if job['search_abstract']:
-        places.append(
-            'پیام'
-        )
-
+        places.append('پیام')
     if job['search_text']:
-        places.append(
-            'متن رأی'
-        )
+        places.append('متن قانون' if is_laws else 'متن رأی')
 
-    rtl(
-        doc.add_paragraph(
-            clean_xml_text(
-                'محل جست‌وجو: '
-                + '، '.join(places)
-            )
-        )
-    )
-
-    rtl(
-        doc.add_paragraph(
-            clean_xml_text(
-                f"تعداد نتایج: "
-                f"{len(job['results'])}"
-            )
-        )
-    )
-
-    rtl(
-        doc.add_paragraph(
-            clean_xml_text(
-                f"آرای بررسی‌شده: "
-                f"{job['checked']}"
-            )
-        )
-    )
+    rtl(doc.add_paragraph(clean_xml_text('محل جست‌وجو: ' + '، '.join(places))))
+    rtl(doc.add_paragraph(clean_xml_text(f"تعداد نتایج: {len(job['results'])}")))
+    rtl(doc.add_paragraph(clean_xml_text(
+        f"{'اسناد' if is_laws else 'آرای'} بررسی‌شده: {job['checked']}"
+    )))
 
     if job['status'] == 'cancelled':
+        rtl(doc.add_paragraph(clean_xml_text(
+            'توجه: جست‌وجو پیش از تکمیل توسط کاربر متوقف شده است.'
+        )))
 
-        rtl(
-            doc.add_paragraph(
-                clean_xml_text(
-                    'توجه: جست‌وجو پیش از '
-                    'تکمیل توسط کاربر متوقف شده است.'
-                )
-            )
-        )
+    for i, item in enumerate(job['results'], 1):
+        rtl(doc.add_heading(clean_xml_text(f"{i}. {item['title']}"), 1))
 
-    for i, vote in enumerate(
-        job['results'],
-        1
-    ):
-
-        rtl(
-            doc.add_heading(
-                clean_xml_text(
-                    f"{i}. {vote['title']}"
-                ),
-                1
-            )
-        )
-
-        locations = vote.get(
-            'matched_in',
-            []
-        )
-
+        locations = item.get('matched_in', [])
         if locations:
+            rtl(doc.add_paragraph(clean_xml_text(
+                'عبارت موردنظر در: ' + '، '.join(locations)
+            )))
 
-            rtl(
-                doc.add_paragraph(
-                    clean_xml_text(
-                        'عبارت موردنظر در: '
-                        + '، '.join(
-                            locations
-                        )
-                    )
-                )
-            )
+        if is_laws:
+            meta = []
+            if item.get('approval_date'):
+                meta.append('تاریخ تصویب: ' + item['approval_date'])
+            if item.get('publication_date'):
+                meta.append('تاریخ انتشار: ' + item['publication_date'])
+            if item.get('document_number'):
+                meta.append('شماره: ' + item['document_number'])
+            if item.get('category'):
+                meta.append('دسته: ' + item['category'])
+            for line in meta:
+                rtl(doc.add_paragraph(clean_xml_text(line)))
+        elif item.get('abstract'):
+            rtl(doc.add_paragraph(clean_xml_text('پیام رأی: ' + item['abstract'])))
 
-        if vote.get(
-            'abstract'
-        ):
-
-            rtl(
-                doc.add_paragraph(
-                    clean_xml_text(
-                        'پیام رأی: '
-                        + vote[
-                            'abstract'
-                        ]
-                    )
-                )
-            )
-
-        rtl(
-            doc.add_paragraph(
-                clean_xml_text(
-                    vote.get(
-                        'body',
-                        ''
-                    )
-                )
-            )
-        )
-
-        rtl(
-            doc.add_paragraph(
-                clean_xml_text(
-                    'منبع رسمی: '
-                    + vote.get(
-                        'url',
-                        ''
-                    )
-                )
-            )
-        )
-
+        rtl(doc.add_paragraph(clean_xml_text(item.get('body', ''))))
+        rtl(doc.add_paragraph(clean_xml_text(
+            ('منبع سند: ' if is_laws else 'منبع رسمی: ') + item.get('url', '')
+        )))
         doc.add_page_break()
 
-    path = (
-        f'/tmp/{jid}.docx'
-    )
-
+    path = f'/tmp/{jid}.docx'
     doc.save(path)
-
     return path
 
 
@@ -2112,14 +1991,18 @@ def download(jid):
             404
         )
 
+    job = JOBS[jid]
+
+    filename = (
+        'national-laws-and-regulations.docx'
+        if job.get('source_id') == QAVANIN_SOURCE_ID
+        else 'national-judicial-decisions.docx'
+    )
+
     return send_file(
         make_doc(jid),
-
         as_attachment=True,
-
-        download_name=(
-            'national-judicial-decisions.docx'
-        )
+        download_name=filename
     )
 
 
