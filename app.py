@@ -13,7 +13,7 @@ import os
 import time
 import math
 
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlencode
 from html import unescape
 
 
@@ -1904,29 +1904,23 @@ def qavanin_diagnostic_route():
 
 @app.post('/api/qavanin/search')
 def start_qavanin():
-    data = request.get_json(force=True)
+    """Create a browser-assisted qavanin.ir search job.
 
+    qavanin.ir blocks server-to-server requests from Render.  The search is
+    therefore opened in the user's browser; the companion Chrome extension
+    reads the official result pages and posts the extracted rows back here.
+    """
+    data = request.get_json(force=True)
     query = (data.get('query') or '').strip()
     search_title = bool(data.get('search_title', True))
     search_text = bool(data.get('search_text', False))
 
     if not query:
         return jsonify(error='عبارت جست‌وجو الزامی است'), 400
-
     if not (search_title or search_text):
-        return jsonify(
-            error='حداقل یکی از گزینه‌های عنوان یا متن قانون را انتخاب کنید.'
-        ), 400
-
-    try:
-        max_pages = int(data.get('max_pages', 1100))
-    except Exception:
-        max_pages = 1100
-
-    max_pages = min(max(max_pages, 1), 1100)
+        return jsonify(error='حداقل یکی از گزینه‌های عنوان یا متن قانون را انتخاب کنید.'), 400
 
     jid = str(uuid.uuid4())
-
     JOBS[jid] = {
         'job_id': jid,
         'source_id': QAVANIN_SOURCE_ID,
@@ -1935,7 +1929,7 @@ def start_qavanin():
         'search_title': search_title,
         'search_abstract': False,
         'search_text': search_text,
-        'status': 'running',
+        'status': 'waiting_browser',
         'cancel': False,
         'checked': 0,
         'found': 0,
@@ -1947,25 +1941,130 @@ def start_qavanin():
         'official_results': None,
         'progress': 0,
         'results': [],
-        'message': 'جست‌وجوی قوانین آغاز شد.'
+        'message': 'صفحه رسمی qavanin.ir در مرورگر باز می‌شود؛ در انتظار دریافت نتایج رسمی...'
     }
 
-    threading.Thread(
-        target=qavanin_worker,
-        args=(
-            jid,
-            query,
-            max_pages,
-            search_title,
-            search_text
-        ),
-        daemon=True
-    ).start()
+    # Keep the exact ASP.NET MVC checkbox convention used by qavanin.ir.
+    params = _qavanin_search_params(
+        query, page=1, size=1000,
+        search_title=search_title, search_text=search_text
+    )
+    params.append(('bridge_job', jid))
+    params.append(('bridge_target', request.host_url.rstrip('/')))
+    browser_url = QAVANIN_LIST + '?' + urlencode(params, doseq=True)
 
     return jsonify(
         job_id=jid,
-        source_id=QAVANIN_SOURCE_ID
+        source_id=QAVANIN_SOURCE_ID,
+        browser_url=browser_url,
+        browser_bridge=True
     )
+
+
+@app.route('/api/qavanin/browser-import/<jid>', methods=['POST', 'OPTIONS'])
+def qavanin_browser_import(jid):
+    """Receive official qavanin.ir rows collected inside the user's browser."""
+    if request.method == 'OPTIONS':
+        r = jsonify(ok=True)
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        r.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        r.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        return r
+
+    job = JOBS.get(jid)
+    if not job or job.get('source_id') != QAVANIN_SOURCE_ID:
+        return jsonify(error='شناسه جست‌وجوی قوانین معتبر نیست.'), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    if data.get('error'):
+        job['status'] = 'error'
+        job['message'] = 'خطا در دریافت نتایج از مرورگر: ' + str(data.get('error'))
+        r = jsonify(ok=False, error=job['message'])
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        return r, 400
+
+    try:
+        official_total = int(data.get('official_total') or 0)
+    except Exception:
+        official_total = 0
+    try:
+        total_pages = int(data.get('total_pages') or 1)
+    except Exception:
+        total_pages = 1
+
+    # Safety guard: this is the unfiltered catalogue, not a legitimate search.
+    if official_total > 100000 and job.get('query'):
+        job['status'] = 'error'
+        job['message'] = (
+            'qavanin.ir فیلتر جست‌وجو را اعمال نکرد و فهرست عمومی را برگرداند؛ '
+            'نتیجه برای جلوگیری از ورود داده نادرست رد شد.'
+        )
+        r = jsonify(ok=False, error=job['message'])
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        return r, 400
+
+    incoming = data.get('results') or []
+    clean = []
+    seen = set()
+    for item in incoming:
+        if not isinstance(item, dict):
+            continue
+        url = (item.get('url') or '').strip()
+        title = norm(item.get('title') or '')
+        if not url or not title or not url.startswith(QAVANIN_BASE):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        body = norm(item.get('body') or '')
+        clean.append({
+            'url': url,
+            'title': title,
+            'abstract': '',
+            'body': body,
+            'text': body,
+            'source': QAVANIN_SOURCE_NAME,
+            'approval_date': norm(item.get('approval_date') or ''),
+            'publication_date': '',
+            'document_number': '',
+            'category': norm(item.get('approver') or ''),
+            'approver': norm(item.get('approver') or ''),
+            'matched_in': ([] if not job.get('search_title') else ['عنوان']) +
+                          ([] if not job.get('search_text') else ['متن قانون/مقرره'])
+        })
+
+    # If the official page says N hits, do not silently accept a partial import.
+    if official_total and len(clean) < official_total:
+        job['status'] = 'error'
+        job['checked'] = len(clean)
+        job['found'] = len(clean)
+        job['official_results'] = official_total
+        job['results'] = clean
+        job['message'] = (
+            f'qavanin.ir تعداد {official_total} یافته اعلام کرد، اما مرورگر فقط '
+            f'{len(clean)} نتیجه را منتقل کرد؛ نتیجه ناقص است.'
+        )
+        r = jsonify(ok=False, error=job['message'])
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        return r, 400
+
+    job['results'] = clean
+    job['checked'] = len(clean)
+    job['found'] = len(clean)
+    job['official_results'] = official_total or len(clean)
+    job['current_page'] = total_pages
+    job['completed_pages'] = total_pages
+    job['total_pages'] = total_pages
+    job['site_total_pages'] = total_pages
+    job['progress'] = 100
+    job['status'] = 'done'
+    job['message'] = (
+        f'جست‌وجوی رسمی qavanin.ir تکمیل شد؛ '
+        f'{job["official_results"]} یافته رسمی دریافت شد.'
+    )
+    r = jsonify(ok=True, found=len(clean), official_total=job['official_results'])
+    r.headers['Access-Control-Allow-Origin'] = '*'
+    return r
 
 
 @app.get('/api/status/<jid>')
