@@ -1117,12 +1117,56 @@ def fetch_law(url, session):
     }
 
 
+def _extract_named_section(text, start_markers, end_markers):
+    raw = norm(text)
+    starts = [(raw.find(m), m) for m in start_markers if raw.find(m) != -1]
+    if not starts:
+        return ''
+    p, m = min(starts, key=lambda x: x[0])
+    start = p + len(m)
+    end = len(raw)
+    for e in end_markers:
+        ep = raw.find(e, start)
+        if ep != -1 and ep < end:
+            end = ep
+    return norm(raw[start:end])
+
+
+def enrich_law_sections(law):
+    body = law.get('body', '') or ''
+    law['main_text'] = _extract_named_section(
+        body, ('متن مصوبه','متن قانون','متن مقرره','متن'),
+        ('تحقیق','پژوهش','تحلیل','توضیحات','اطلاعات تنقیحی','سوابق تنقیحی',
+         'تنقیح','تاریخچه','قوانین و مقررات مرتبط','مقررات مرتبط','اسناد مرتبط')
+    )
+    law['research_text'] = _extract_named_section(
+        body, ('تحقیق','پژوهش','تحلیل','توضیحات'),
+        ('اطلاعات تنقیحی','سوابق تنقیحی','تنقیح','تاریخچه',
+         'قوانین و مقررات مرتبط','مقررات مرتبط','اسناد مرتبط')
+    )
+    law['consolidation_text'] = _extract_named_section(
+        body, ('اطلاعات تنقیحی','سوابق تنقیحی','تنقیح','تاریخچه'),
+        ('قوانین و مقررات مرتبط','مقررات مرتبط','اسناد مرتبط')
+    )
+    law['related_text'] = _extract_named_section(
+        body, ('قوانین و مقررات مرتبط','مقررات مرتبط','اسناد مرتبط',
+               'منابع مرتبط','پیوندهای مرتبط'), ()
+    )
+    return law
+
+
 def law_matches(law, query, search_title, search_text):
     selected = []
     if search_title:
         selected.append(law.get('title', ''))
     if search_text:
-        selected.append(law.get('body', ''))
+        selected.extend([
+            law.get('body', ''),
+            law.get('main_text', ''),
+            law.get('research_text', ''),
+            law.get('consolidation_text', ''),
+            law.get('related_text', '')
+        ])
     return matches(' '.join(selected), query)
 
 
@@ -1130,8 +1174,20 @@ def law_matched_in(law, query, search_title, search_text):
     locations = []
     if search_title and matches(law.get('title', ''), query):
         locations.append('عنوان')
-    if search_text and matches(law.get('body', ''), query):
-        locations.append('متن قانون')
+    if search_text:
+        checks = [
+            ('متن قانون/مقرره', law.get('main_text', '')),
+            ('تحقیق/پژوهش/تحلیل', law.get('research_text', '')),
+            ('اطلاعات تنقیحی/تاریخچه', law.get('consolidation_text', '')),
+            ('قوانین و مقررات مرتبط', law.get('related_text', ''))
+        ]
+        hit = False
+        for label, value in checks:
+            if value and matches(value, query):
+                locations.append(label)
+                hit = True
+        if not hit and matches(law.get('body', ''), query):
+            locations.append('متن کامل سند')
     return locations
 
 
@@ -1157,16 +1213,11 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
             job['message'] = 'برای این عبارت نتیجه‌ای در منبع قوانین یافت نشد.'
             return
 
-        # Search engines may not publish an exact count. In that case we
-        # continue until an empty/repeated page, capped by the user's limit.
-        if reported_total is not None:
-            estimated_pages = max(1, math.ceil(reported_total / QAVANIN_PAGE_SIZE))
-            pages_to_scan = min(estimated_pages, max_pages)
-        else:
-            pages_to_scan = max_pages
-
+        # Scan forward until Nezamat returns an empty/repeated page.
+        # Do not trust a visible count to stop after page 1.
+        pages_to_scan = max_pages
         job['total_pages'] = pages_to_scan
-        job['site_total_pages'] = pages_to_scan
+        job['site_total_pages'] = 0
         job['official_results'] = reported_total
 
         seen = set()
@@ -1209,6 +1260,8 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                     if law['title'] == 'قانون یا مقرره':
                         law['title'] = item['title']
 
+                    law = enrich_law_sections(law)
+
                     if law_matches(law, query, search_title, search_text):
                         law['matched_in'] = law_matched_in(
                             law, query, search_title, search_text
@@ -1231,6 +1284,19 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
             if new_on_page == 0:
                 break
             time.sleep(0.15)
+
+        qnrm = norm(query)
+        def _law_rank(item):
+            t = norm(item.get('title', ''))
+            if t == qnrm:
+                return (0, len(t))
+            if t.startswith(qnrm):
+                return (1, len(t))
+            if qnrm in t:
+                return (2, len(t))
+            return (3, len(t))
+        job['results'].sort(key=_law_rank)
+        job['found'] = len(job['results'])
 
         if job['cancel']:
             job['status'] = 'cancelled'
@@ -1621,7 +1687,7 @@ def make_doc(jid):
     if job['search_abstract']:
         places.append('پیام')
     if job['search_text']:
-        places.append('متن قانون' if is_laws else 'متن رأی')
+        places.append('متن کامل سند + تحقیق/تنقیح/مرتبط' if is_laws else 'متن رأی')
 
     rtl(doc.add_paragraph(clean_xml_text('محل جست‌وجو: ' + '، '.join(places))))
     rtl(doc.add_paragraph(clean_xml_text(f"تعداد نتایج: {len(job['results'])}")))
