@@ -988,6 +988,49 @@ def qavanin_rest_page(session, query, page=1, per_page=100):
 
     return items, _header_int('X-WP-Total'), _header_int('X-WP-TotalPages')
 
+
+
+def qavanin_catalog_page(session, page=1, per_page=100):
+    """Enumerate the full Nezamat post catalogue instead of WP search.
+
+    WP /search only returns a search-engine candidate set and can stop at 100
+    items for some queries.  The posts collection is paginated across the full
+    catalogue; we inspect every returned post locally and therefore do not use
+    that 100-result search ceiling as the universe of documents.
+    """
+    url = urljoin(QAVANIN_BASE, '/wp-json/wp/v2/posts')
+    params = {
+        'page': max(1, int(page)),
+        'per_page': min(max(int(per_page), 1), 100),
+        '_fields': 'id,link,title,content'
+    }
+    response = session.get(url, params=params, timeout=45, allow_redirects=True)
+    response.raise_for_status()
+    rows = response.json()
+
+    items = []
+    for row in rows if isinstance(rows, list) else []:
+        href = (row.get('link') or '').strip()
+        if not href or not _same_nezamat_host(href):
+            continue
+        raw_title = row.get('title', {}).get('rendered', '') if isinstance(row.get('title'), dict) else row.get('title', '')
+        raw_content = row.get('content', {}).get('rendered', '') if isinstance(row.get('content'), dict) else row.get('content', '')
+        title = norm(BeautifulSoup(unescape(str(raw_title)), 'html.parser').get_text(' ', strip=True))
+        content = norm(BeautifulSoup(unescape(str(raw_content)), 'html.parser').get_text(' ', strip=True))
+        items.append({
+            'url': href.split('#', 1)[0].rstrip('/') + '/',
+            'title': title or 'قانون یا مقرره',
+            'content': content
+        })
+
+    def _header_int(name):
+        try:
+            return int(response.headers.get(name, '') or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return items, _header_int('X-WP-Total'), _header_int('X-WP-TotalPages')
+
 def _same_nezamat_host(url):
     return bool(re.match(r'^https?://(?:www\.)?nezamat\.ir(?:/|$)', url, re.I))
 
@@ -1233,99 +1276,52 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
     session = make_qavanin_session()
 
     try:
-        job['message'] = 'در حال جست‌وجوی قوانین و مقررات در نظامات...'
+        job['message'] = 'در حال بررسی فهرست کامل قوانین و مقررات نظامات...'
 
-        # Preferred engine: WordPress REST API, 100 candidates per page.
-        # This fixes the previous 15-document ceiling and gives us the real
-        # number of result pages directly from X-WP-TotalPages.
-        use_rest = True
-        try:
-            first_items, reported_total, real_total_pages = qavanin_rest_page(
-                session, query, page=1, per_page=100
-            )
-        except Exception:
-            use_rest = False
-            first_html = qavanin_search_page(
-                session, query, page=1,
-                search_title=search_title,
-                search_text=search_text
-            )
-            first_items = get_law_links(first_html)
-            reported_total = extract_qavanin_total_results(first_html)
-            real_total_pages = 0
+        # IMPORTANT: do not use /wp-json/wp/v2/search as the document universe.
+        # That endpoint can expose only a limited candidate set (commonly 100).
+        # Enumerate the complete posts catalogue and apply the user's query locally.
+        first_items, catalog_total, catalog_pages = qavanin_catalog_page(
+            session, page=1, per_page=100
+        )
 
         if not first_items:
             job['status'] = 'done'
             job['progress'] = 100
             job['total_pages'] = 0
-            job['message'] = 'برای این عبارت نتیجه‌ای در منبع قوانین یافت نشد.'
+            job['message'] = 'هیچ سندی از فهرست قوانین نظامات دریافت نشد.'
             return
 
-        if use_rest and real_total_pages > 0:
-            # IMPORTANT: `max_pages` is the user's scan ceiling.  Do not stop
-            # merely because the REST search endpoint reports one page / 100
-            # candidates; some Nezamat/WordPress deployments cap that endpoint
-            # and under-report additional searchable records.  We therefore
-            # continue page-by-page up to the requested ceiling and stop only
-            # when the server actually returns an empty/out-of-range page.
-            pages_to_scan = max_pages
-            job['site_total_pages'] = real_total_pages
-        else:
-            pages_to_scan = max_pages
-            job['site_total_pages'] = 0
-
+        pages_to_scan = min(catalog_pages or max_pages, max_pages)
         job['total_pages'] = pages_to_scan
-        job['official_results'] = reported_total
+        job['site_total_pages'] = catalog_pages or 0
+        job['official_results'] = catalog_total or None
 
         seen = set()
-        previous_urls = None
 
         for page in range(1, pages_to_scan + 1):
             if job['cancel']:
                 break
 
             job['current_page'] = page
-            if use_rest and real_total_pages:
-                job['message'] = f'در حال بررسی صفحه {page} از {pages_to_scan} قوانین و مقررات...'
-            else:
-                job['message'] = f'در حال بررسی صفحه {page} قوانین و مقررات...'
+            job['message'] = (
+                f'در حال بررسی صفحه {page} از {pages_to_scan} فهرست کامل قوانین؛ '
+                f'{job["checked"]} سند تاکنون بررسی شده است...'
+            )
 
             if page == 1:
                 items = first_items
-            elif use_rest:
-                try:
-                    items, _, _ = qavanin_rest_page(session, query, page=page, per_page=100)
-                except requests.exceptions.HTTPError as e:
-                    # Some WordPress REST deployments cap search pagination at
-                    # 100 results.  If that happens, continue through the public
-                    # HTML search pagination instead of silently ending at 100.
-                    if e.response is not None and e.response.status_code == 400:
-                        html = qavanin_search_page(
-                            session, query, page=page,
-                            search_title=search_title,
-                            search_text=search_text
-                        )
-                        items = get_law_links(html)
-                        use_rest = False
-                        real_total_pages = 0
-                    else:
-                        raise
             else:
-                html = qavanin_search_page(
-                    session, query, page=page,
-                    search_title=search_title,
-                    search_text=search_text
-                )
-                items = get_law_links(html)
+                try:
+                    items, _, _ = qavanin_catalog_page(session, page=page, per_page=100)
+                except requests.exceptions.HTTPError as e:
+                    if e.response is not None and e.response.status_code == 400:
+                        break
+                    raise
 
-            current_urls = {x['url'] for x in items}
             if not items:
                 break
-            if page > 1 and previous_urls is not None and current_urls == previous_urls:
-                break
-            previous_urls = current_urls
 
-            new_on_page = 0
             for item in items:
                 if job['cancel']:
                     break
@@ -1334,14 +1330,22 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                 if url in seen:
                     continue
                 seen.add(url)
-                new_on_page += 1
                 job['checked'] += 1
+
+                # Cheap local pre-filter from the catalogue payload.  Only matching
+                # candidates need a second request for the fully cleaned document.
+                selected = []
+                if search_title:
+                    selected.append(item.get('title', ''))
+                if search_text:
+                    selected.append(item.get('content', ''))
+                if not matches(' '.join(selected), query):
+                    continue
 
                 try:
                     law = fetch_law(url, session)
                     if law['title'] == 'قانون یا مقرره':
                         law['title'] = item['title']
-
                     law = enrich_law_sections(law)
 
                     if law_matches(law, query, search_title, search_text):
@@ -1354,22 +1358,14 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                     job['failed_items'] += 1
 
             job['completed_pages'] = page
-            if pages_to_scan > 0:
-                job['progress'] = min(99, round(page / pages_to_scan * 100, 1))
-            else:
-                job['progress'] = min(95, round(page / max(1, max_pages) * 95, 1))
-
+            job['progress'] = min(99, round(page / max(1, pages_to_scan) * 100, 1))
             job['message'] = (
-                f'صفحه {page} بررسی شد؛ {job["checked"]} سند بررسی و '
+                f'صفحه {page} بررسی شد؛ {job["checked"]} سند از فهرست کامل بررسی و '
                 f'{job["found"]} نتیجه منطبق یافت شده است.'
             )
-
-            if new_on_page == 0:
-                break
-            time.sleep(0.15)
+            time.sleep(0.10)
 
         qnrm = norm(query)
-
         def _law_rank(item):
             t = norm(item.get('title', ''))
             if t == qnrm:
@@ -1390,7 +1386,7 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
             job['status'] = 'done'
             job['progress'] = 100
             job['message'] = (
-                f'جست‌وجوی قوانین تکمیل شد. {job["checked"]} سند بررسی شد و '
+                f'جست‌وجوی قوانین تکمیل شد. {job["checked"]} سند از فهرست کامل بررسی شد و '
                 f'{job["found"]} نتیجه منطبق یافت شد.'
             )
 
