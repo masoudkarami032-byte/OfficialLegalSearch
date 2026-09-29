@@ -52,7 +52,7 @@
             padding: 20px;
             border-radius: 14px;
             margin-bottom: 16px;
-            box-shadow: 0 2px 8px rgba(0,0,0,.08);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
         }
 
         label {
@@ -68,6 +68,14 @@
             border: 1px solid #bbb;
             border-radius: 8px;
             font-size: 16px;
+            background: white;
+        }
+
+        input[type="text"]:focus,
+        input[type="number"]:focus {
+            outline: none;
+            border-color: #1769aa;
+            box-shadow: 0 0 0 2px rgba(23, 105, 170, .12);
         }
 
         .source-options {
@@ -100,18 +108,32 @@
             align-items: center;
             gap: 7px;
             font-weight: normal;
+            cursor: pointer;
         }
 
         .option input {
             width: 19px;
             height: 19px;
+            cursor: pointer;
         }
 
         .help {
             margin-top: 12px;
             color: #666;
             font-size: 13px;
-            line-height: 1.8;
+            line-height: 1.9;
+        }
+
+        .database-note {
+            display: none;
+            margin-top: 13px;
+            padding: 11px 13px;
+            border-radius: 8px;
+            background: #fff8e1;
+            border: 1px solid #f0d98b;
+            color: #6c5715;
+            font-size: 13px;
+            line-height: 1.9;
         }
 
         button {
@@ -120,6 +142,7 @@
             padding: 12px 20px;
             font-size: 15px;
             cursor: pointer;
+            font-family: inherit;
         }
 
         .buttons {
@@ -198,16 +221,19 @@
         }
 
         #message {
-            line-height: 1.8;
+            line-height: 1.9;
+            word-break: break-word;
         }
 
         .source {
             margin-top: 15px;
             font-size: 13px;
             color: #666;
+            line-height: 1.8;
         }
 
-        @media(max-width:600px) {
+        @media(max-width: 600px) {
+
             .container {
                 padding: 10px;
             }
@@ -217,6 +243,10 @@
                 border-radius: 10px;
             }
 
+            .header {
+                padding: 18px;
+            }
+
             .header h1 {
                 font-size: 20px;
             }
@@ -224,20 +254,38 @@
             .options-row {
                 gap: 12px;
             }
+
+            button {
+                width: 100%;
+            }
+
+            .buttons {
+                display: block;
+            }
+
+            .buttons button {
+                margin-bottom: 8px;
+            }
         }
     </style>
 </head>
+
 
 <body>
 
 <div class="container">
 
     <div class="header">
-        <h1>نرم‌افزار جامع سایت‌های رسمی</h1>
+
+        <h1>
+            نرم‌افزار جامع سایت‌های رسمی
+        </h1>
 
         <p>
-            جست‌وجوی آرای قضایی و قوانین و مقررات در منابع رسمی
+            جست‌وجوی آرای قضایی و قوانین و مقررات
+            در منابع رسمی
         </p>
+
     </div>
 
 
@@ -251,6 +299,7 @@
             id="query"
             type="text"
             placeholder="مثال: تصرف عدوانی"
+            autocomplete="off"
         >
 
 
@@ -263,6 +312,7 @@
             <div class="options-row">
 
                 <label class="option">
+
                     <input
                         type="radio"
                         name="source"
@@ -270,17 +320,27 @@
                         value="judgments"
                         checked
                     >
-                    آرای قضایی
+
+                    <span>
+                        آرای قضایی
+                    </span>
+
                 </label>
 
+
                 <label class="option">
+
                     <input
                         type="radio"
                         name="source"
                         id="sourceLaws"
                         value="laws"
                     >
-                    قوانین و مقررات
+
+                    <span>
+                        قوانین و مقررات
+                    </span>
+
                 </label>
 
             </div>
@@ -297,39 +357,70 @@
             <div class="options-row">
 
                 <label class="option">
+
                     <input
                         type="checkbox"
                         id="searchTitle"
                         checked
                     >
-                    عنوان
+
+                    <span>
+                        عنوان
+                    </span>
+
                 </label>
 
 
-                <label class="option" id="abstractOption">
+                <label
+                    class="option"
+                    id="abstractOption"
+                >
+
                     <input
                         type="checkbox"
                         id="searchAbstract"
                     >
-                    <span id="abstractLabel">پیام</span>
+
+                    <span id="abstractLabel">
+                        پیام
+                    </span>
+
                 </label>
 
 
                 <label class="option">
+
                     <input
                         type="checkbox"
                         id="searchText"
                     >
-                    <span id="textLabel">متن رأی</span>
+
+                    <span id="textLabel">
+                        متن رأی
+                    </span>
+
                 </label>
 
             </div>
 
 
-            <div class="help" id="searchHelp">
+            <div
+                class="help"
+                id="searchHelp"
+            >
                 می‌توانید یک یا چند گزینه را هم‌زمان انتخاب کنید.
                 اگر فقط «عنوان» انتخاب شود، جست‌وجو محدودتر و دقیق‌تر است.
                 برای جست‌وجوی گسترده‌تر، «پیام» یا «متن رأی» را نیز انتخاب کنید.
+            </div>
+
+
+            <div
+                class="database-note"
+                id="databaseNote"
+            >
+                جست‌وجوی قوانین از پایگاه داده قوانین و مقررات
+                نرم‌افزار انجام می‌شود. اطلاعات هر سند همراه با
+                پیوند منبع رسمی نگهداری می‌شود.
             </div>
 
         </div>
@@ -337,7 +428,10 @@
 
         <div style="margin-top:18px">
 
-            <label for="maxPages">
+            <label
+                for="maxPages"
+                id="maxPagesLabel"
+            >
                 حداکثر تعداد صفحات
             </label>
 
@@ -349,20 +443,37 @@
                 value="1100"
             >
 
+            <div
+                class="help"
+                id="maxPagesHelp"
+            >
+                این مقدار مشخص می‌کند حداکثر چند صفحه از نتایج
+                آرای قضایی بررسی شود.
+            </div>
+
         </div>
 
 
         <div class="buttons">
 
-            <button id="searchBtn">
+            <button
+                id="searchBtn"
+                type="button"
+            >
                 شروع جست‌وجو
             </button>
 
-            <button id="cancelBtn">
+            <button
+                id="cancelBtn"
+                type="button"
+            >
                 توقف جست‌وجو
             </button>
 
-            <button id="downloadBtn">
+            <button
+                id="downloadBtn"
+                type="button"
+            >
                 دانلود Word
             </button>
 
@@ -387,46 +498,95 @@
 
 
         <div class="progress-box">
+
             <div
                 class="progress-bar"
                 id="progressBar"
             ></div>
+
         </div>
 
 
         <div class="stats">
 
             <div class="stat">
-                <span>پیشرفت</span>
-                <strong id="progress">0%</strong>
+
+                <span>
+                    پیشرفت
+                </span>
+
+                <strong id="progress">
+                    0%
+                </strong>
+
             </div>
 
-            <div class="stat">
-                <span>صفحه</span>
-                <strong id="pages">0 / 0</strong>
+
+            <div
+                class="stat"
+                id="pagesStat"
+            >
+
+                <span>
+                    صفحه
+                </span>
+
+                <strong id="pages">
+                    0 / 0
+                </strong>
+
             </div>
 
-            <div class="stat">
-                <span id="checkedLabel">آرای بررسی‌شده</span>
-                <strong id="checked">0</strong>
-            </div>
 
             <div class="stat">
-                <span>نتایج منطبق</span>
-                <strong id="found">0</strong>
+
+                <span id="checkedLabel">
+                    آرای بررسی‌شده
+                </span>
+
+                <strong id="checked">
+                    0
+                </strong>
+
             </div>
 
+
             <div class="stat">
-                <span id="failedLabel">خطا در آرای منفرد</span>
-                <strong id="failed">0</strong>
+
+                <span>
+                    نتایج منطبق
+                </span>
+
+                <strong id="found">
+                    0
+                </strong>
+
+            </div>
+
+
+            <div class="stat">
+
+                <span id="failedLabel">
+                    خطا در آرای منفرد
+                </span>
+
+                <strong id="failed">
+                    0
+                </strong>
+
             </div>
 
         </div>
 
 
         <div class="source">
+
             منبع:
-            <span id="sourceName">سامانه ملی آرای قضایی پژوهشگاه قوه قضاییه</span>
+
+            <span id="sourceName">
+                سامانه ملی آرای قضایی پژوهشگاه قوه قضاییه
+            </span>
+
         </div>
 
     </div>
@@ -438,6 +598,7 @@
 
 let currentJob = null;
 let timer = null;
+let currentSource = 'judgments';
 
 
 const query =
@@ -467,6 +628,9 @@ const textLabel =
 const searchHelp =
     document.getElementById('searchHelp');
 
+const databaseNote =
+    document.getElementById('databaseNote');
+
 const sourceName =
     document.getElementById('sourceName');
 
@@ -478,6 +642,15 @@ const failedLabel =
 
 const maxPages =
     document.getElementById('maxPages');
+
+const maxPagesLabel =
+    document.getElementById('maxPagesLabel');
+
+const maxPagesHelp =
+    document.getElementById('maxPagesHelp');
+
+const pagesStat =
+    document.getElementById('pagesStat');
 
 const searchBtn =
     document.getElementById('searchBtn');
@@ -513,17 +686,57 @@ const failed =
     document.getElementById('failed');
 
 
+function stopTimer() {
+
+    if (timer) {
+
+        clearInterval(timer);
+
+        timer = null;
+    }
+}
+
+
 function updateSourceUI() {
+
+    stopTimer();
+
+    currentJob = null;
+
+    resetStatus();
+
+    statusCard.style.display =
+        'none';
+
+    searchBtn.disabled =
+        false;
+
+    cancelBtn.disabled =
+        false;
+
+    cancelBtn.style.display =
+        'none';
+
 
     if (sourceLaws.checked) {
 
-        abstractOption.style.display = 'none';
-        searchAbstract.checked = false;
+        currentSource =
+            'laws';
 
-        textLabel.textContent = 'متن قانون';
+        abstractOption.style.display =
+            'none';
+
+        searchAbstract.checked =
+            false;
+
+        textLabel.textContent =
+            'متن قانون';
 
         searchHelp.textContent =
-            'در سامانه قوانین می‌توانید در عنوان یا متن قانون و مقرره جست‌وجو کنید.';
+            'در بخش قوانین و مقررات می‌توانید جست‌وجو را در عنوان، متن قانون یا هر دو انجام دهید. عبارت‌های AND و NOT نیز قابل استفاده هستند.';
+
+        databaseNote.style.display =
+            'block';
 
         sourceName.textContent =
             'سامانه ملی قوانین و مقررات جمهوری اسلامی ایران';
@@ -532,19 +745,39 @@ function updateSourceUI() {
             'اسناد بررسی‌شده';
 
         failedLabel.textContent =
-            'خطا در اسناد منفرد';
+            'خطا در اسناد';
 
         query.placeholder =
             'مثال: قانون مدنی';
 
+        maxPages.disabled =
+            true;
+
+        maxPagesLabel.textContent =
+            'حداکثر تعداد صفحات';
+
+        maxPagesHelp.textContent =
+            'در جست‌وجوی پایگاه داده قوانین، محدودیت تعداد صفحات اعمال نمی‌شود.';
+
+        pagesStat.style.display =
+            'none';
+
     } else {
 
-        abstractOption.style.display = 'flex';
+        currentSource =
+            'judgments';
 
-        textLabel.textContent = 'متن رأی';
+        abstractOption.style.display =
+            'flex';
+
+        textLabel.textContent =
+            'متن رأی';
 
         searchHelp.textContent =
-            'می‌توانید یک یا چند گزینه را هم‌زمان انتخاب کنید. اگر فقط «عنوان» انتخاب شود، جست‌وجو محدودتر و دقیق‌تر است. برای جست‌وجوی گسترده‌تر، «پیام» یا «متن رأی» را نیز انتخاب کنید.';
+            'می‌توانید یک یا چند گزینه را هم‌زمان انتخاب کنید. اگر فقط «عنوان» انتخاب شود، جست‌وجو محدودتر و دقیق‌تر است. برای جست‌وجوی گسترده‌تر، «پیام» یا «متن رأی» را نیز انتخاب کنید. عبارت‌های AND و NOT نیز قابل استفاده هستند.';
+
+        databaseNote.style.display =
+            'none';
 
         sourceName.textContent =
             'سامانه ملی آرای قضایی پژوهشگاه قوه قضاییه';
@@ -557,37 +790,62 @@ function updateSourceUI() {
 
         query.placeholder =
             'مثال: تصرف عدوانی';
+
+        maxPages.disabled =
+            false;
+
+        maxPagesLabel.textContent =
+            'حداکثر تعداد صفحات';
+
+        maxPagesHelp.textContent =
+            'این مقدار مشخص می‌کند حداکثر چند صفحه از نتایج آرای قضایی بررسی شود.';
+
+        pagesStat.style.display =
+            'block';
     }
 }
 
 
 function resetStatus() {
 
-    progress.textContent = '0%';
+    progress.textContent =
+        '0%';
 
-    progressBar.style.width = '0%';
+    progressBar.style.width =
+        '0%';
 
-    pages.textContent = '0 / 0';
+    pages.textContent =
+        '0 / 0';
 
-    checked.textContent = '0';
+    checked.textContent =
+        '0';
 
-    found.textContent = '0';
+    found.textContent =
+        '0';
 
-    failed.textContent = '0';
+    failed.textContent =
+        '0';
 
-    downloadBtn.style.display = 'none';
+    downloadBtn.style.display =
+        'none';
+
+    downloadBtn.disabled =
+        false;
 }
 
 
 async function startSearch() {
 
-    const q = query.value.trim();
+    const q =
+        query.value.trim();
 
     if (!q) {
 
         alert(
             'عبارت جست‌وجو را وارد کنید.'
         );
+
+        query.focus();
 
         return;
     }
@@ -596,38 +854,54 @@ async function startSearch() {
     if (sourceLaws.checked) {
 
         if (
-            !searchTitle.checked &&
+            !searchTitle.checked
+            &&
             !searchText.checked
         ) {
+
             alert(
                 'حداقل یکی از گزینه‌های عنوان یا متن قانون را انتخاب کنید.'
             );
+
             return;
         }
 
     } else {
 
         if (
-            !searchTitle.checked &&
-            !searchAbstract.checked &&
+            !searchTitle.checked
+            &&
+            !searchAbstract.checked
+            &&
             !searchText.checked
         ) {
+
             alert(
                 'حداقل یکی از گزینه‌های عنوان، پیام یا متن رأی را انتخاب کنید.'
             );
+
             return;
         }
     }
 
 
+    stopTimer();
+
+    currentJob = null;
+
     resetStatus();
 
-    statusCard.style.display = 'block';
+    statusCard.style.display =
+        'block';
 
     message.textContent =
         'در حال شروع جست‌وجو...';
 
-    searchBtn.disabled = true;
+    searchBtn.disabled =
+        true;
+
+    cancelBtn.disabled =
+        false;
 
     cancelBtn.style.display =
         'inline-block';
@@ -640,46 +914,68 @@ async function startSearch() {
                 ? '/api/qavanin/search'
                 : '/api/search';
 
-        const response = await fetch(
-            endpoint,
-            {
-                method: 'POST',
 
-                headers: {
-                    'Content-Type':
-                        'application/json'
-                },
+        const response =
+            await fetch(
+                endpoint,
+                {
+                    method:
+                        'POST',
 
-                body: JSON.stringify({
+                    headers: {
+                        'Content-Type':
+                            'application/json'
+                    },
 
-                    query: q,
+                    body:
+                        JSON.stringify({
 
-                    search_title:
-                        searchTitle.checked,
+                            query:
+                                q,
 
-                    search_abstract:
-                        searchAbstract.checked,
+                            search_title:
+                                searchTitle.checked,
 
-                    search_text:
-                        searchText.checked,
+                            search_abstract:
+                                sourceLaws.checked
+                                    ? false
+                                    : searchAbstract.checked,
 
-                    max_pages:
-                        parseInt(
-                            maxPages.value || '1100'
-                        )
-                })
-            }
-        );
+                            search_text:
+                                searchText.checked,
+
+                            max_pages:
+                                sourceLaws.checked
+                                    ? 1
+                                    : parseInt(
+                                        maxPages.value
+                                        || '1100'
+                                    )
+                        })
+                }
+            );
 
 
-        const data =
-            await response.json();
+        let data = {};
+
+        try {
+
+            data =
+                await response.json();
+
+        } catch (jsonError) {
+
+            throw new Error(
+                'پاسخ نامعتبر از سرور دریافت شد.'
+            );
+        }
 
 
         if (!response.ok) {
 
             throw new Error(
-                data.error ||
+                data.error
+                ||
                 'خطا در شروع جست‌وجو'
             );
         }
@@ -689,17 +985,22 @@ async function startSearch() {
             data.job_id;
 
 
-        timer = setInterval(
-            checkStatus,
-            1000
-        );
+        currentSource =
+            sourceLaws.checked
+                ? 'laws'
+                : 'judgments';
 
 
-        checkStatus();
+        timer =
+            setInterval(
+                checkStatus,
+                1000
+            );
 
-    }
 
-    catch (error) {
+        await checkStatus();
+
+    } catch (error) {
 
         message.textContent =
             error.message;
@@ -711,34 +1012,49 @@ async function startSearch() {
             'none';
     }
 }
-
-
-async function checkStatus() {
+    function checkStatus() {
 
     if (!currentJob) {
         return;
     }
 
+    fetch(
+        '/api/status/' +
+        encodeURIComponent(currentJob)
+    )
 
-    try {
+    .then(async response => {
 
-        const response =
-            await fetch(
-                '/api/status/' +
-                currentJob
+        let data = {};
+
+        try {
+
+            data =
+                await response.json();
+
+        } catch (jsonError) {
+
+            throw new Error(
+                'پاسخ نامعتبر از سرور دریافت شد.'
             );
-
-
-        const data =
-            await response.json();
-
+        }
 
         if (!response.ok) {
 
             throw new Error(
-                data.error ||
-                'خطا در دریافت وضعیت'
+                data.error
+                ||
+                'خطا در دریافت وضعیت جست‌وجو'
             );
+        }
+
+        return data;
+    })
+
+    .then(data => {
+
+        if (!currentJob) {
+            return;
         }
 
 
@@ -746,49 +1062,84 @@ async function checkStatus() {
             data.message || '';
 
 
-        const percent =
+        let percent =
             Number(
                 data.progress || 0
+            );
+
+        if (!Number.isFinite(percent)) {
+            percent = 0;
+        }
+
+        percent =
+            Math.max(
+                0,
+                Math.min(
+                    100,
+                    percent
+                )
             );
 
 
         progress.textContent =
             percent + '%';
 
-
         progressBar.style.width =
             percent + '%';
 
 
-        pages.textContent =
-            (data.current_page || 0)
-            + ' / '
-            + (data.total_pages || 0);
+        if (currentSource === 'judgments') {
+
+            pagesStat.style.display =
+                'block';
+
+            pages.textContent =
+                (data.current_page || 0)
+                + ' / '
+                + (data.total_pages || 0);
+
+        } else {
+
+            pagesStat.style.display =
+                'none';
+        }
 
 
         checked.textContent =
             data.checked || 0;
 
-
         found.textContent =
             data.found || 0;
-
 
         failed.textContent =
             data.failed_items || 0;
 
 
         if (
-            data.status === 'done' ||
-            data.status === 'cancelled' ||
+            data.source_name
+            &&
+            data.source_name.trim()
+        ) {
+
+            sourceName.textContent =
+                data.source_name;
+        }
+
+
+        if (
+            data.status === 'done'
+            ||
+            data.status === 'cancelled'
+            ||
             data.status === 'error'
         ) {
 
-            clearInterval(timer);
-
-            timer = null;
+            stopTimer();
 
             searchBtn.disabled =
+                false;
+
+            cancelBtn.disabled =
                 false;
 
             cancelBtn.style.display =
@@ -796,22 +1147,25 @@ async function checkStatus() {
 
 
             if (
-                data.status === 'done' ||
+                data.status === 'done'
+                ||
                 data.status === 'cancelled'
             ) {
 
                 downloadBtn.style.display =
                     'inline-block';
+
+            } else {
+
+                downloadBtn.style.display =
+                    'none';
             }
         }
+    })
 
-    }
+    .catch(error => {
 
-    catch (error) {
-
-        clearInterval(timer);
-
-        timer = null;
+        stopTimer();
 
         message.textContent =
             error.message;
@@ -819,9 +1173,15 @@ async function checkStatus() {
         searchBtn.disabled =
             false;
 
+        cancelBtn.disabled =
+            false;
+
         cancelBtn.style.display =
             'none';
-    }
+
+        downloadBtn.style.display =
+            'none';
+    });
 }
 
 
@@ -836,22 +1196,55 @@ async function cancelSearch() {
         true;
 
     message.textContent =
-        'در حال توقف جست‌وجو...';
+        'در حال ارسال درخواست توقف...';
 
 
     try {
 
-        await fetch(
-            '/api/cancel/' +
-            currentJob,
-            {
-                method: 'POST'
-            }
-        );
+        const response =
+            await fetch(
+                '/api/cancel/'
+                + encodeURIComponent(
+                    currentJob
+                ),
+                {
+                    method:
+                        'POST'
+                }
+            );
 
-    }
 
-    finally {
+        let data = {};
+
+        try {
+
+            data =
+                await response.json();
+
+        } catch (jsonError) {
+
+            data = {};
+        }
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error
+                ||
+                'خطا در توقف جست‌وجو'
+            );
+        }
+
+
+        message.textContent =
+            'درخواست توقف ارسال شد. لطفاً چند لحظه صبر کنید.';
+
+
+    } catch (error) {
+
+        message.textContent =
+            error.message;
 
         cancelBtn.disabled =
             false;
@@ -867,22 +1260,38 @@ function downloadWord() {
 
 
     window.location.href =
-        '/api/download/' +
-        currentJob;
+        '/api/download/'
+        + encodeURIComponent(
+            currentJob
+        );
+}
+
+
+function handleSourceChange() {
+
+    if (
+        searchBtn.disabled
+        &&
+        currentJob
+    ) {
+
+        return;
+    }
+
+    updateSourceUI();
 }
 
 
 sourceJudgments.addEventListener(
     'change',
-    updateSourceUI
+    handleSourceChange
 );
+
 
 sourceLaws.addEventListener(
     'change',
-    updateSourceUI
+    handleSourceChange
 );
-
-updateSourceUI();
 
 
 searchBtn.addEventListener(
@@ -907,16 +1316,60 @@ query.addEventListener(
     'keydown',
     function(event) {
 
-        if (event.key === 'Enter') {
+        if (
+            event.key === 'Enter'
+        ) {
 
             event.preventDefault();
 
-            startSearch();
+            if (!searchBtn.disabled) {
+
+                startSearch();
+            }
         }
     }
 );
 
+
+maxPages.addEventListener(
+    'change',
+    function() {
+
+        let value =
+            parseInt(
+                maxPages.value
+                || '1100'
+            );
+
+
+        if (
+            !Number.isFinite(value)
+        ) {
+
+            value = 1100;
+        }
+
+
+        value =
+            Math.max(
+                1,
+                Math.min(
+                    1100,
+                    value
+                )
+            );
+
+
+        maxPages.value =
+            value;
+    }
+);
+
+
+updateSourceUI();
+
 </script>
 
 </body>
+
 </html>
