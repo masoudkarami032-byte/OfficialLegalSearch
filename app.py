@@ -1635,31 +1635,27 @@ def worker(
                         session
                     )
 
-                    if vote_matches(
-                        vote,
-                        query,
-                        search_title,
-                        search_abstract,
-                        search_text
-                    ):
+                    # The official search engine has already decided that this
+                    # decision matches the user's query and selected search fields.
+                    # Do NOT re-filter official results locally: differences in
+                    # normalization/indexing would incorrectly discard valid hits.
+                    official_locations = []
+                    if search_title:
+                        official_locations.append('عنوان')
+                    if search_abstract:
+                        official_locations.append('پیام')
+                    if search_text:
+                        official_locations.append('متن رأی')
 
-                        vote['matched_in'] = (
-                            matched_in(
-                                vote,
-                                query,
-                                search_title,
-                                search_abstract,
-                                search_text
-                            )
-                        )
+                    vote['matched_in'] = official_locations
 
-                        job['results'].append(
-                            vote
-                        )
+                    job['results'].append(
+                        vote
+                    )
 
-                        job['found'] = len(
-                            job['results']
-                        )
+                    job['found'] = len(
+                        job['results']
+                    )
 
                 except Exception:
 
