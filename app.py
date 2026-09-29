@@ -2072,7 +2072,7 @@ def start():
             search_abstract,
             search_text
         ),
-        daemon=True
+        daemon=False
     ).start()
 
     return jsonify(
