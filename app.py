@@ -920,18 +920,15 @@ def qavanin_search_page(
     search_text=False
 ):
     """Fetch a Nezamat HTML search-results page (fallback path)."""
-    # Keep Nezamat's own search engine, but paginate it with WordPress's
-    # canonical `paged` query variable.  Using /page/N/ together with ?s=...
-    # can be canonicalised back to the first search page on this site, which
-    # made page 2 repeat and stopped the worker at the first 100 REST hits.
     params = {
         's': query,
         'post_type': 'post'
     }
-    if int(page) > 1:
-        params['paged'] = int(page)
 
-    url = QAVANIN_LIST
+    url = QAVANIN_LIST if page <= 1 else urljoin(
+        QAVANIN_BASE,
+        f'/page/{int(page)}/'
+    )
 
     response = session.get(
         url,
@@ -1231,108 +1228,146 @@ def law_matched_in(law, query, search_title, search_text):
     return locations
 
 
+def qavanin_next_search_url(html, current_url):
+    """Return the exact next-page URL published by Nezamat search HTML.
+
+    Do not guess /page/N/ or ?paged=N.  Follow the pagination link emitted by
+    the site itself, while refusing off-site links and obvious document links.
+    """
+    soup = BeautifulSoup(html or '', 'html.parser')
+
+    candidates = []
+    # Strongest signals first.
+    for a in soup.find_all('a', href=True):
+        rel = ' '.join(a.get('rel', [])).lower()
+        classes = ' '.join(a.get('class', [])).lower()
+        aria = (a.get('aria-label') or '').lower()
+        text_value = norm(a.get_text(' ', strip=True)).lower()
+        score = 0
+        if 'next' in rel:
+            score += 100
+        if 'next' in classes:
+            score += 80
+        if 'next' in aria:
+            score += 70
+        if text_value in ('بعدی', 'صفحه بعد', 'بعدی »', '»', 'next', 'next page', 'older posts'):
+            score += 60
+        if score:
+            candidates.append((score, a.get('href', '')))
+
+    for _, href in sorted(candidates, reverse=True):
+        absolute = urljoin(current_url or QAVANIN_BASE, href).split('#', 1)[0]
+        if _same_nezamat_host(absolute):
+            return absolute
+    return None
+
+
+def qavanin_fetch_search_url(session, url):
+    response = session.get(url, timeout=35, allow_redirects=True)
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or 'utf-8'
+    if qavanin_is_challenge(response.text):
+        raise RuntimeError('منبع قوانین صفحه امنیتی غیرقابل پردازش برگرداند.')
+    return response.text, response.url
+
+
 def qavanin_worker(jid, query, max_pages, search_title, search_text):
     job = JOBS[jid]
     session = make_qavanin_session()
 
     try:
         job['message'] = 'در حال جست‌وجوی قوانین و مقررات در نظامات...'
-
-        # Use Nezamat's own public search so the candidate set remains the
-        # same one that previously produced the correct 39 title matches.
-        # Pagination is handled by `paged=N` in qavanin_search_page.
-        first_html = qavanin_search_page(
-            session, query, page=1,
-            search_title=search_title,
-            search_text=search_text
-        )
-        first_items = get_law_links(first_html)
-        reported_total = extract_qavanin_total_results(first_html)
-
-        if not first_items:
-            job['status'] = 'done'
-            job['progress'] = 100
-            job['total_pages'] = 0
-            job['message'] = 'برای این عبارت نتیجه‌ای در منبع قوانین یافت نشد.'
-            return
-
-        pages_to_scan = max_pages
-        job['total_pages'] = pages_to_scan
-        job['site_total_pages'] = 0
-        job['official_results'] = reported_total
-
         seen = set()
-        previous_urls = None
 
-        for page in range(1, pages_to_scan + 1):
-            if job['cancel']:
-                break
-
-            job['current_page'] = page
-            job['message'] = f'در حال بررسی صفحه {page} قوانین و مقررات...'
-
-            if page == 1:
-                items = first_items
-            else:
-                html = qavanin_search_page(
-                    session, query, page=page,
-                    search_title=search_title,
-                    search_text=search_text
-                )
-                items = get_law_links(html)
-
-            current_urls = {x['url'] for x in items}
-            if not items:
-                break
-            if page > 1 and previous_urls is not None and current_urls == previous_urls:
-                break
-            previous_urls = current_urls
-
-            new_on_page = 0
+        def process_items(items):
+            new_count = 0
             for item in items:
                 if job['cancel']:
                     break
-
                 url = item['url']
                 if url in seen:
                     continue
                 seen.add(url)
-                new_on_page += 1
+                new_count += 1
                 job['checked'] += 1
-
                 try:
                     law = fetch_law(url, session)
                     if law['title'] == 'قانون یا مقرره':
                         law['title'] = item['title']
-
                     law = enrich_law_sections(law)
-
                     if law_matches(law, query, search_title, search_text):
-                        law['matched_in'] = law_matched_in(
-                            law, query, search_title, search_text
-                        )
+                        law['matched_in'] = law_matched_in(law, query, search_title, search_text)
                         job['results'].append(law)
                         job['found'] = len(job['results'])
                 except Exception:
                     job['failed_items'] += 1
+            return new_count
 
-            job['completed_pages'] = page
-            if pages_to_scan > 0:
-                job['progress'] = min(99, round(page / pages_to_scan * 100, 1))
-            else:
-                job['progress'] = min(95, round(page / max(1, max_pages) * 95, 1))
+        # Phase 1: preserve the proven REST candidate set.  This is the path
+        # that produced the user's known-good 39 title matches out of 100.
+        rest_items = []
+        try:
+            rest_items, reported_total, _ = qavanin_rest_page(session, query, page=1, per_page=100)
+            job['official_results'] = reported_total
+        except Exception:
+            job['official_results'] = None
 
+        if rest_items:
+            job['message'] = 'در حال بررسی نتایج اولیه نظامات...'
+            process_items(rest_items)
+
+        # Phase 2: enumerate the HTML search by FOLLOWING the site's own Next
+        # link.  No synthetic /page/N/ or paged=N URL is constructed here.
+        first_response = session.get(
+            QAVANIN_LIST,
+            params={'s': query, 'post_type': 'post'},
+            timeout=35,
+            allow_redirects=True
+        )
+        first_response.raise_for_status()
+        first_response.encoding = first_response.apparent_encoding or 'utf-8'
+        html = first_response.text
+        current_url = first_response.url
+        if qavanin_is_challenge(html):
+            raise RuntimeError('منبع قوانین صفحه امنیتی غیرقابل پردازش برگرداند.')
+
+        if job.get('official_results') is None:
+            job['official_results'] = extract_qavanin_total_results(html)
+
+        visited_search_pages = set()
+        html_page = 0
+        # max_pages is retained as a safety ceiling for HTML result pages.
+        html_limit = max(1, int(max_pages))
+        job['total_pages'] = html_limit
+        job['site_total_pages'] = 0
+
+        while html and html_page < html_limit and not job['cancel']:
+            canonical_page = current_url.split('#', 1)[0]
+            if canonical_page in visited_search_pages:
+                break
+            visited_search_pages.add(canonical_page)
+            html_page += 1
+            job['current_page'] = html_page
+
+            items = get_law_links(html)
+            process_items(items)
+            job['completed_pages'] = html_page
+            job['progress'] = min(99, round(html_page / html_limit * 100, 1))
             job['message'] = (
-                f'صفحه {page} بررسی شد؛ {job["checked"]} سند بررسی و '
+                f'صفحه {html_page} نظامات بررسی شد؛ {job["checked"]} سند بررسی و '
                 f'{job["found"]} نتیجه منطبق یافت شده است.'
             )
 
-            if new_on_page == 0:
+            next_url = qavanin_next_search_url(html, current_url)
+            if not next_url or next_url in visited_search_pages:
+                break
+            try:
+                html, current_url = qavanin_fetch_search_url(session, next_url)
+            except Exception:
                 break
             time.sleep(0.15)
 
         qnrm = norm(query)
-
         def _law_rank(item):
             t = norm(item.get('title', ''))
             if t == qnrm:
@@ -1345,7 +1380,6 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
 
         job['results'].sort(key=_law_rank)
         job['found'] = len(job['results'])
-
         if job['cancel']:
             job['status'] = 'cancelled'
             job['message'] = 'جست‌وجو به درخواست کاربر متوقف شد.'
@@ -1356,21 +1390,10 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                 f'جست‌وجوی قوانین تکمیل شد. {job["checked"]} سند بررسی شد و '
                 f'{job["found"]} نتیجه منطبق یافت شد.'
             )
-
-    except requests.exceptions.Timeout:
-        job['status'] = 'error'
-        job['message'] = 'ارتباط با منبع قوانین بیش از حد طول کشید. دوباره تلاش کنید.'
-    except requests.exceptions.RequestException as e:
-        job['status'] = 'error'
-        job['message'] = 'خطا در ارتباط با منبع قوانین: ' + str(e)
     except Exception as e:
         job['status'] = 'error'
-        job['message'] = 'خطا در جست‌وجوی قوانین و مقررات: ' + str(e)
-
-
-# =========================================================
-# WORKER
-# =========================================================
+        job['progress'] = 100
+        job['message'] = f'خطا در جست‌وجوی قوانین: {e}'
 
 def worker(
     jid,
