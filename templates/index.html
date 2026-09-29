@@ -335,10 +335,12 @@
                         name="source"
                         id="sourceLaws"
                         value="laws"
+                        disabled
+                        title="بخش قوانین و مقررات موقتاً غیرفعال است"
                     >
 
                     <span>
-                        قوانین و مقررات
+                        قوانین و مقررات (موقتاً غیرفعال)
                     </span>
 
                 </label>
@@ -600,62 +602,6 @@ let currentJob = null;
 let timer = null;
 let currentSource = 'judgments';
 
-// Smooth visual counter for "checked". The server remains authoritative;
-// this only animates the UI between the last displayed value and the latest
-// value returned by /api/status.
-let displayedChecked = 0;
-let targetChecked = 0;
-let checkedAnimationFrame = null;
-let checkedLastTick = 0;
-
-function stopCheckedAnimation() {
-    if (checkedAnimationFrame !== null) {
-        cancelAnimationFrame(checkedAnimationFrame);
-        checkedAnimationFrame = null;
-    }
-    checkedLastTick = 0;
-}
-
-function animateCheckedTo(value, forceFinal = false) {
-    const nextTarget = Math.max(0, Math.floor(Number(value) || 0));
-    targetChecked = nextTarget;
-
-    if (forceFinal || nextTarget < displayedChecked) {
-        stopCheckedAnimation();
-        displayedChecked = nextTarget;
-        checked.textContent = displayedChecked.toLocaleString('en-US');
-        return;
-    }
-
-    if (checkedAnimationFrame !== null) return;
-
-    const step = (timestamp) => {
-        // About 30 visible number changes per second.  When the server jumps
-        // by a large batch, advance by enough integers per frame to catch up
-        // before the next status poll, while never displaying a number that
-        // the server has not already reported as checked.
-        if (!checkedLastTick) checkedLastTick = timestamp;
-        const elapsed = timestamp - checkedLastTick;
-
-        if (elapsed >= 32 && displayedChecked < targetChecked) {
-            const remaining = targetChecked - displayedChecked;
-            const increment = Math.max(1, Math.ceil(remaining / 24));
-            displayedChecked = Math.min(targetChecked, displayedChecked + increment);
-            checked.textContent = displayedChecked.toLocaleString('en-US');
-            checkedLastTick = timestamp;
-        }
-
-        if (displayedChecked < targetChecked) {
-            checkedAnimationFrame = requestAnimationFrame(step);
-        } else {
-            checkedAnimationFrame = null;
-            checkedLastTick = 0;
-        }
-    };
-
-    checkedAnimationFrame = requestAnimationFrame(step);
-}
-
 
 const query =
     document.getElementById('query');
@@ -754,6 +700,11 @@ function stopTimer() {
 
 
 function updateSourceUI() {
+
+    if (sourceLaws.checked || sourceLaws.disabled) {
+        sourceJudgments.checked = true;
+        sourceLaws.checked = false;
+    }
 
     stopTimer();
 
@@ -873,9 +824,6 @@ function resetStatus() {
     pages.textContent =
         '0 / 0';
 
-    stopCheckedAnimation();
-    displayedChecked = 0;
-    targetChecked = 0;
     checked.textContent =
         '0';
 
@@ -911,6 +859,12 @@ async function startSearch() {
 
 
     if (sourceLaws.checked) {
+
+        alert('بخش قوانین و مقررات موقتاً غیرفعال است. در حال حاضر فقط جست‌وجوی آرای قضایی فعال است.');
+        sourceJudgments.checked = true;
+        sourceLaws.checked = false;
+        updateSourceUI();
+        return;
 
         if (
             !searchTitle.checked
@@ -1050,18 +1004,6 @@ async function startSearch() {
                 : 'judgments';
 
 
-        if (sourceLaws.checked && data.browser_url) {
-            const qavaninWindow = window.open(data.browser_url, '_blank');
-            if (!qavaninWindow) {
-                message.textContent =
-                    'مرورگر باز شدن qavanin.ir را مسدود کرد. Pop-up را برای این سایت مجاز کنید و دوباره جست‌وجو را بزنید.';
-            } else {
-                message.textContent =
-                    'qavanin.ir باز شد؛ افزونه در حال دریافت نتایج رسمی است...';
-            }
-        }
-
-
         timer =
             setInterval(
                 checkStatus,
@@ -1176,13 +1118,8 @@ async function startSearch() {
         }
 
 
-        const serverChecked = Number(data.checked || 0);
-        const terminalStatus =
-            data.status === 'done'
-            || data.status === 'cancelled'
-            || data.status === 'error';
-
-        animateCheckedTo(serverChecked, terminalStatus);
+        checked.textContent =
+            data.checked || 0;
 
         found.textContent =
             data.found || 0;
