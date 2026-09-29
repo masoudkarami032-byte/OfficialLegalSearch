@@ -23,6 +23,7 @@ BASE = 'https://ara.jri.ac.ir'
 LIST = BASE + '/Judge/Index'
 
 JOBS = {}
+ANALYSIS_JOBS = {}
 
 SOURCE_ID = 'national_judgments'
 SOURCE_NAME = 'سامانه ملی آرای قضایی پژوهشگاه قوه قضاییه'
@@ -726,6 +727,13 @@ def fetch_vote(
         'html.parser'
     )
 
+    # نسخه خام متن قابل مشاهده صفحه رسمی؛ برای بخش «متن کامل آرا»
+    # این مقدار هرگز به مدل سپرده نمی‌شود و مدل اجازه بازنویسی آن را ندارد.
+    raw_official_text = soup.get_text(
+        '\n',
+        strip=False
+    )
+
     full_text = norm(
         soup.get_text(
             ' ',
@@ -842,6 +850,7 @@ def fetch_vote(
         'abstract': abstract,
         'body': body,
         'text': full_text,
+        'raw_official_text': raw_official_text,
         'source': SOURCE_NAME
     }
 
@@ -1906,6 +1915,255 @@ def make_doc(jid):
     path = f'/tmp/{jid}.docx'
     doc.save(path)
     return path
+
+
+
+# =========================================================
+# CLOSED-SOURCE JUDICIAL PRACTICE ANALYSIS
+# =========================================================
+
+CLOSED_SOURCE_ANALYSIS_INSTRUCTIONS = """
+وظیفه تو فقط استخراج، مقایسه، دسته‌بندی و گزارش محتوای آرای قضاییِ موجود در ورودی است.
+تو در این کار حق اظهارنظر حقوقی مستقل نداری.
+
+قواعد قطعی:
+- فقط از عبارت جست‌وجوی کاربر و آرای موجود در همین ورودی استفاده کن.
+- استفاده از دانش قبلی مدل، حافظه، اینترنت، قوانین، آرای دیگر، نظریات حقوقی یا هر منبع خارج از ورودی ممنوع است.
+- هیچ ماده قانونی، متن قانون، رأی، تعریف، قاعده، استدلال یا واقعیتی را از خودت اضافه، اصلاح یا تکمیل نکن.
+- اگر چیزی در آرای ورودی نیست، صریحاً بنویس: «در آرای بازیابی‌شده اطلاعات کافی برای تعیین این موضوع وجود ندارد.»
+- هر نتیجه تحلیلی مهم باید به رأی یا آرای مشخص همین مجموعه با شناسه [J1]، [J2] و ... ارجاع داشته باشد.
+- ادعای خواهان/شاکی، دفاع خوانده/طرف شکایت، استدلال مرجع و نتیجه رأی را با هم مخلوط نکن.
+- از تعداد محدود آرای ورودی درباره کل رویه قضایی ایران نتیجه کلی نگیر. فقط درباره «آرای بازیابی‌شده» یا «مجموعه مورد بررسی» صحبت کن.
+- اگر آرایی با هم متفاوت یا متعارض‌اند، اختلاف را گزارش کن؛ آن را حل نکن و نظر شخصی نده.
+- خلاصه هر رأی باید ساده، کامل و وفادار به همان متن باشد و هیچ مطلبی خارج از آن وارد نشود.
+- متن کامل آرا را در پاسخ تولید نکن. برنامه آن بخش را مستقیماً از داده رسمی اضافه می‌کند.
+
+گزارش را دقیقاً با این ساختار فارسی تهیه کن:
+1. خلاصه اجرایی آرای بازیابی‌شده
+2. موضوعات اصلی مطرح‌شده در آرا
+3. الگوها و گرایش‌های مشاهده‌شده در آرای بازیابی‌شده (با تعداد و ارجاع)
+4. نحوه کاربرد عبارت یا ماده جست‌وجوشده در آرا
+5. شرایط و استدلال‌های همراه با پذیرش ادعا یا استناد
+6. شرایط و استدلال‌های همراه با رد ادعا یا استناد
+7. ادعاها و استدلال‌های خواهان/شاکی و خوانده/طرف شکایت و نحوه برخورد مرجع با آنها
+8. اختلاف دیدگاه‌ها، استثناها و موارد متفاوت
+9. نمونه آرا برای هر الگوی مشاهده‌شده با مشخصات موجود در ورودی
+10. جمع‌بندی صرفاً بر اساس همین مجموعه
+11. خلاصه ساده و کامل تک‌تک آرا، به ترتیب J1 تا آخر
+
+در بخش 11 برای هر رأی، تا جایی که واقعاً در متن وجود دارد، موضوع پرونده، خواسته/ادعا، دفاع، استدلال مرجع و نتیجه را به زبان ساده توضیح بده. اگر هر کدام در متن مشخص نیست، همان را اعلام کن.
+"""
+
+
+def _responses_output_text(data):
+    parts = []
+    for item in data.get('output', []) or []:
+        if item.get('type') != 'message':
+            continue
+        for content in item.get('content', []) or []:
+            if content.get('type') == 'output_text' and content.get('text'):
+                parts.append(content['text'])
+    return '\n'.join(parts).strip()
+
+
+def _analysis_input(job):
+    blocks = [
+        'عبارت جست‌وجوی کاربر: ' + job.get('query', ''),
+        'تعداد آرای بازیابی‌شده: ' + str(len(job.get('results', []))),
+        ''
+    ]
+    for i, vote in enumerate(job.get('results', []), 1):
+        blocks.extend([
+            f'===== [J{i}] =====',
+            'عنوان: ' + (vote.get('title') or ''),
+            'پیام رأی: ' + (vote.get('abstract') or ''),
+            'محل انطباق عبارت: ' + '، '.join(vote.get('matched_in', []) or []),
+            'نشانی رسمی: ' + (vote.get('url') or ''),
+            'متن رأیِ بازیابی‌شده:',
+            vote.get('body') or vote.get('text') or '',
+            ''
+        ])
+    return '\n'.join(blocks)
+
+
+def run_judicial_analysis(source_jid, aid):
+    analysis_job = ANALYSIS_JOBS[aid]
+    try:
+        source_job = JOBS.get(source_jid)
+        if not source_job:
+            raise RuntimeError('نتایج جست‌وجو روی سرور موجود نیست.')
+        if source_job.get('source_id') != SOURCE_ID:
+            raise RuntimeError('تحلیل رویه قضایی فقط برای آرای قضایی فعال است.')
+        if not source_job.get('results'):
+            raise RuntimeError('رأیی برای تحلیل وجود ندارد.')
+
+        api_key = (os.getenv('OPENAI_API_KEY') or '').strip()
+        if not api_key:
+            raise RuntimeError('OPENAI_API_KEY روی سرور تنظیم نشده است.')
+
+        analysis_job['message'] = 'در حال تحلیل فقط بر اساس آرای بازیابی‌شده...'
+        payload = {
+            'model': (os.getenv('OPENAI_ANALYSIS_MODEL') or 'gpt-5.6-luna').strip(),
+            'instructions': CLOSED_SOURCE_ANALYSIS_INSTRUCTIONS,
+            'input': _analysis_input(source_job),
+            'reasoning': {'effort': 'medium'},
+            'text': {'verbosity': 'high'},
+            'max_output_tokens': 120000,
+            'store': False
+        }
+        response = requests.post(
+            'https://api.openai.com/v1/responses',
+            headers={
+                'Authorization': 'Bearer ' + api_key,
+                'Content-Type': 'application/json'
+            },
+            json=payload,
+            timeout=1200
+        )
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get('error', {}).get('message', response.text)
+            except Exception:
+                detail = response.text
+            raise RuntimeError('خطای سرویس تحلیل: ' + str(detail)[:1500])
+
+        report = _responses_output_text(response.json())
+        if not report:
+            raise RuntimeError('سرویس تحلیل گزارش متنی برنگرداند.')
+
+        analysis_job['report'] = report
+        analysis_job['status'] = 'done'
+        analysis_job['progress'] = 100
+        analysis_job['message'] = 'تحلیل رویه قضایی تکمیل شد.'
+    except Exception as e:
+        analysis_job['status'] = 'error'
+        analysis_job['message'] = str(e)
+
+
+def make_analysis_doc(aid):
+    analysis_job = ANALYSIS_JOBS[aid]
+    source_job = JOBS[analysis_job['source_job_id']]
+    doc = Document()
+
+    rtl(doc.add_heading(clean_xml_text('تحلیل رویه قضایی'), 0))
+    rtl(doc.add_paragraph(clean_xml_text(
+        'این گزارش فقط بر اساس آرای بازیابی‌شده در همین جست‌وجو تهیه شده است. '
+        'مدل اجازه استفاده از منبع یا دانش حقوقی خارج از این مجموعه را نداشته است.'
+    )))
+    rtl(doc.add_paragraph(clean_xml_text('عبارت جست‌وجو: ' + source_job.get('query', ''))))
+    rtl(doc.add_paragraph(clean_xml_text('تعداد آرا: ' + str(len(source_job.get('results', []))))))
+
+    for line in (analysis_job.get('report') or '').splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if re.match(r'^#{1,6}\s+', line):
+            line = re.sub(r'^#{1,6}\s+', '', line)
+            rtl(doc.add_heading(clean_xml_text(line), 1))
+        elif re.match(r'^\d+\.\s+', line):
+            rtl(doc.add_heading(clean_xml_text(line), 1))
+        else:
+            rtl(doc.add_paragraph(clean_xml_text(line)))
+
+    doc.add_page_break()
+    rtl(doc.add_heading(clean_xml_text('12. متن کامل آرای بازیابی‌شده'), 0))
+    rtl(doc.add_paragraph(clean_xml_text(
+        'متن‌های این بخش توسط هوش مصنوعی تولید، خلاصه، اصلاح یا بازنویسی نشده‌اند؛ '
+        'مستقیماً از متن قابل مشاهده صفحه رسمی هر رأی درج شده‌اند.'
+    )))
+
+    for i, vote in enumerate(source_job.get('results', []), 1):
+        rtl(doc.add_heading(clean_xml_text(f'رأی J{i}: {vote.get("title", "رأی قضایی")}'), 1))
+        rtl(doc.add_paragraph(clean_xml_text('منبع رسمی: ' + (vote.get('url') or ''))))
+        raw = vote.get('raw_official_text') or vote.get('text') or ''
+        # No normalization or AI processing: only XML-invalid control characters
+        # are removed because Word cannot store them.
+        rtl(doc.add_paragraph(clean_xml_text(raw)))
+        doc.add_page_break()
+
+    path = f'/tmp/analysis-{aid}.docx'
+    doc.save(path)
+    return path
+
+
+@app.post('/api/analyze/<jid>')
+def start_judicial_analysis(jid):
+    job = JOBS.get(jid)
+    if not job:
+        return jsonify(error='نتایج جست‌وجو یافت نشد.'), 404
+    if job.get('source_id') != SOURCE_ID:
+        return jsonify(error='این قابلیت فقط برای آرای قضایی است.'), 400
+    if job.get('status') not in ('done', 'cancelled'):
+        return jsonify(error='ابتدا جست‌وجوی آرا باید پایان یابد.'), 400
+    if not job.get('results'):
+        return jsonify(error='رأیی برای تحلیل وجود ندارد.'), 400
+
+    aid = str(uuid.uuid4())
+    ANALYSIS_JOBS[aid] = {
+        'analysis_id': aid,
+        'source_job_id': jid,
+        'status': 'running',
+        'progress': 1,
+        'message': 'تحلیل آغاز شد.',
+        'report': ''
+    }
+    threading.Thread(
+        target=run_judicial_analysis,
+        args=(jid, aid),
+        daemon=False
+    ).start()
+    return jsonify(analysis_id=aid)
+
+
+@app.get('/api/analysis/status/<aid>')
+def judicial_analysis_status(aid):
+    analysis_job = ANALYSIS_JOBS.get(aid)
+    if not analysis_job:
+        return jsonify(error='تحلیل یافت نشد.'), 404
+    return jsonify(
+        analysis_id=aid,
+        status=analysis_job.get('status'),
+        progress=analysis_job.get('progress', 0),
+        message=analysis_job.get('message', '')
+    )
+
+
+@app.get('/api/analysis/report/<aid>')
+def judicial_analysis_report(aid):
+    analysis_job = ANALYSIS_JOBS.get(aid)
+    if not analysis_job:
+        return jsonify(error='تحلیل یافت نشد.'), 404
+    if analysis_job.get('status') != 'done':
+        return jsonify(error='تحلیل هنوز تکمیل نشده است.'), 409
+
+    source_job = JOBS.get(analysis_job['source_job_id'])
+    judgments = []
+    for i, vote in enumerate(source_job.get('results', []), 1):
+        judgments.append({
+            'id': f'J{i}',
+            'title': vote.get('title', ''),
+            'url': vote.get('url', ''),
+            'raw_official_text': vote.get('raw_official_text') or vote.get('text') or ''
+        })
+
+    return jsonify(
+        query=source_job.get('query', ''),
+        count=len(judgments),
+        report=analysis_job.get('report', ''),
+        judgments=judgments
+    )
+
+
+@app.get('/api/analysis/download/<aid>')
+def judicial_analysis_download(aid):
+    analysis_job = ANALYSIS_JOBS.get(aid)
+    if not analysis_job or analysis_job.get('status') != 'done':
+        return 'Not found', 404
+    return send_file(
+        make_analysis_doc(aid),
+        as_attachment=True,
+        download_name='judicial-practice-analysis.docx'
+    )
 
 
 # =========================================================
