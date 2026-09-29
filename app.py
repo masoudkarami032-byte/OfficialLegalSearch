@@ -945,21 +945,20 @@ def qavanin_search_page(
     return response.text
 
 
-def qavanin_rest_page(session, query, page=1, per_page=100):
-    """Use Nezamat's WordPress REST search API.
+def qavanin_rest_page(session, query=None, page=1, per_page=100):
+    """Enumerate Nezamat's complete searchable WordPress index.
 
-    The old HTML scraper could stop after the first 15 cards because the
-    site's search pagination is not reliably represented by /page/N/ on all
-    deployments.  WordPress REST exposes deterministic pagination and the
-    X-WP-Total / X-WP-TotalPages headers.
+    Do NOT pass the user's query to WordPress here. On Nezamat the remote
+    search can cap the candidate set at 100. Instead we page through the
+    generic WP search index with no search term and apply matching locally.
+    Leaving subtype unset is deliberate: it avoids losing searchable custom
+    post types that are not exposed by /wp/v2/posts.
     """
     url = urljoin(QAVANIN_BASE, '/wp-json/wp/v2/search')
     params = {
-        'search': query,
         'page': max(1, int(page)),
         'per_page': min(max(int(per_page), 1), 100),
         'type': 'post',
-        'subtype': 'post',
         '_fields': 'id,title,url,subtype'
     }
     response = session.get(url, params=params, timeout=35, allow_redirects=True)
@@ -978,7 +977,11 @@ def qavanin_rest_page(session, query, page=1, per_page=100):
         if key in seen:
             continue
         seen.add(key)
-        items.append({'url': key, 'title': title or 'قانون یا مقرره'})
+        items.append({
+            'url': key,
+            'title': title or 'قانون یا مقرره',
+            'subtype': (row.get('subtype') or '').strip()
+        })
 
     def _header_int(name):
         try:
@@ -1228,146 +1231,113 @@ def law_matched_in(law, query, search_title, search_text):
     return locations
 
 
-def qavanin_next_search_url(html, current_url):
-    """Return the exact next-page URL published by Nezamat search HTML.
-
-    Do not guess /page/N/ or ?paged=N.  Follow the pagination link emitted by
-    the site itself, while refusing off-site links and obvious document links.
-    """
-    soup = BeautifulSoup(html or '', 'html.parser')
-
-    candidates = []
-    # Strongest signals first.
-    for a in soup.find_all('a', href=True):
-        rel = ' '.join(a.get('rel', [])).lower()
-        classes = ' '.join(a.get('class', [])).lower()
-        aria = (a.get('aria-label') or '').lower()
-        text_value = norm(a.get_text(' ', strip=True)).lower()
-        score = 0
-        if 'next' in rel:
-            score += 100
-        if 'next' in classes:
-            score += 80
-        if 'next' in aria:
-            score += 70
-        if text_value in ('بعدی', 'صفحه بعد', 'بعدی »', '»', 'next', 'next page', 'older posts'):
-            score += 60
-        if score:
-            candidates.append((score, a.get('href', '')))
-
-    for _, href in sorted(candidates, reverse=True):
-        absolute = urljoin(current_url or QAVANIN_BASE, href).split('#', 1)[0]
-        if _same_nezamat_host(absolute):
-            return absolute
-    return None
-
-
-def qavanin_fetch_search_url(session, url):
-    response = session.get(url, timeout=35, allow_redirects=True)
-    response.raise_for_status()
-    response.encoding = response.apparent_encoding or 'utf-8'
-    if qavanin_is_challenge(response.text):
-        raise RuntimeError('منبع قوانین صفحه امنیتی غیرقابل پردازش برگرداند.')
-    return response.text, response.url
-
-
 def qavanin_worker(jid, query, max_pages, search_title, search_text):
     job = JOBS[jid]
     session = make_qavanin_session()
 
     try:
-        job['message'] = 'در حال جست‌وجوی قوانین و مقررات در نظامات...'
+        job['message'] = 'در حال پیمایش فهرست کامل قابل جست‌وجوی نظامات...'
+
+        # Enumerate the COMPLETE searchable index. The user query is matched
+        # locally so Nezamat's 100-candidate remote-search cap cannot truncate
+        # the universe of documents.
+        first_items, catalog_total, catalog_pages = qavanin_rest_page(
+            session, None, page=1, per_page=100
+        )
+
+        if not first_items:
+            job['status'] = 'done'
+            job['progress'] = 100
+            job['total_pages'] = 0
+            job['message'] = 'فهرست قابل جست‌وجوی نظامات خالی برگردانده شد.'
+            return
+
+        pages_to_scan = min(catalog_pages or max_pages, max_pages)
+        job['site_total_pages'] = catalog_pages
+        job['total_pages'] = pages_to_scan
+        job['official_results'] = catalog_total
+
         seen = set()
 
-        def process_items(items):
-            new_count = 0
+        for page in range(1, pages_to_scan + 1):
+            if job['cancel']:
+                break
+
+            job['current_page'] = page
+            job['message'] = (
+                f'در حال بررسی صفحه {page} از {pages_to_scan} فهرست کامل نظامات...'
+            )
+
+            if page == 1:
+                items = first_items
+            else:
+                items, _, _ = qavanin_rest_page(
+                    session, None, page=page, per_page=100
+                )
+
+            if not items:
+                break
+
+            new_on_page = 0
             for item in items:
                 if job['cancel']:
                     break
+
                 url = item['url']
                 if url in seen:
                     continue
                 seen.add(url)
-                new_count += 1
+                new_on_page += 1
                 job['checked'] += 1
+
+                # For title-only searches the REST index already gives us the
+                # title. Avoid downloading every full document; fetch only a
+                # title candidate. For text searches we must inspect the body.
+                title_hit = search_title and matches(item.get('title', ''), query)
+                if search_title and not search_text and not title_hit:
+                    continue
+
                 try:
                     law = fetch_law(url, session)
-                    if law['title'] == 'قانون یا مقرره':
-                        law['title'] = item['title']
+                    # Keep the index title as a fallback AND as an additional
+                    # title-match source; page templates sometimes expose a
+                    # different heading than the search index.
+                    index_title = item.get('title', '')
+                    if law['title'] == 'قانون یا مقرره' and index_title:
+                        law['title'] = index_title
+
                     law = enrich_law_sections(law)
-                    if law_matches(law, query, search_title, search_text):
-                        law['matched_in'] = law_matched_in(law, query, search_title, search_text)
+                    page_title_hit = search_title and matches(law.get('title', ''), query)
+                    effective_title_hit = title_hit or page_title_hit
+                    text_hit = search_text and law_matches(law, query, False, True)
+
+                    if effective_title_hit or text_hit:
+                        locations = []
+                        if effective_title_hit:
+                            locations.append('عنوان')
+                        if search_text:
+                            for loc in law_matched_in(law, query, False, True):
+                                if loc not in locations:
+                                    locations.append(loc)
+                        law['matched_in'] = locations
                         job['results'].append(law)
                         job['found'] = len(job['results'])
                 except Exception:
                     job['failed_items'] += 1
-            return new_count
 
-        # Phase 1: preserve the proven REST candidate set.  This is the path
-        # that produced the user's known-good 39 title matches out of 100.
-        rest_items = []
-        try:
-            rest_items, reported_total, _ = qavanin_rest_page(session, query, page=1, per_page=100)
-            job['official_results'] = reported_total
-        except Exception:
-            job['official_results'] = None
-
-        if rest_items:
-            job['message'] = 'در حال بررسی نتایج اولیه نظامات...'
-            process_items(rest_items)
-
-        # Phase 2: enumerate the HTML search by FOLLOWING the site's own Next
-        # link.  No synthetic /page/N/ or paged=N URL is constructed here.
-        first_response = session.get(
-            QAVANIN_LIST,
-            params={'s': query, 'post_type': 'post'},
-            timeout=35,
-            allow_redirects=True
-        )
-        first_response.raise_for_status()
-        first_response.encoding = first_response.apparent_encoding or 'utf-8'
-        html = first_response.text
-        current_url = first_response.url
-        if qavanin_is_challenge(html):
-            raise RuntimeError('منبع قوانین صفحه امنیتی غیرقابل پردازش برگرداند.')
-
-        if job.get('official_results') is None:
-            job['official_results'] = extract_qavanin_total_results(html)
-
-        visited_search_pages = set()
-        html_page = 0
-        # max_pages is retained as a safety ceiling for HTML result pages.
-        html_limit = max(1, int(max_pages))
-        job['total_pages'] = html_limit
-        job['site_total_pages'] = 0
-
-        while html and html_page < html_limit and not job['cancel']:
-            canonical_page = current_url.split('#', 1)[0]
-            if canonical_page in visited_search_pages:
-                break
-            visited_search_pages.add(canonical_page)
-            html_page += 1
-            job['current_page'] = html_page
-
-            items = get_law_links(html)
-            process_items(items)
-            job['completed_pages'] = html_page
-            job['progress'] = min(99, round(html_page / html_limit * 100, 1))
+            job['completed_pages'] = page
+            job['progress'] = min(99, round(page / max(1, pages_to_scan) * 100, 1))
             job['message'] = (
-                f'صفحه {html_page} نظامات بررسی شد؛ {job["checked"]} سند بررسی و '
+                f'صفحه {page} بررسی شد؛ {job["checked"]} سند بررسی و '
                 f'{job["found"]} نتیجه منطبق یافت شده است.'
             )
 
-            next_url = qavanin_next_search_url(html, current_url)
-            if not next_url or next_url in visited_search_pages:
+            if new_on_page == 0:
                 break
-            try:
-                html, current_url = qavanin_fetch_search_url(session, next_url)
-            except Exception:
-                break
-            time.sleep(0.15)
+            time.sleep(0.05)
 
         qnrm = norm(query)
+
         def _law_rank(item):
             t = norm(item.get('title', ''))
             if t == qnrm:
@@ -1380,6 +1350,7 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
 
         job['results'].sort(key=_law_rank)
         job['found'] = len(job['results'])
+
         if job['cancel']:
             job['status'] = 'cancelled'
             job['message'] = 'جست‌وجو به درخواست کاربر متوقف شد.'
@@ -1390,10 +1361,21 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                 f'جست‌وجوی قوانین تکمیل شد. {job["checked"]} سند بررسی شد و '
                 f'{job["found"]} نتیجه منطبق یافت شد.'
             )
+
+    except requests.exceptions.Timeout:
+        job['status'] = 'error'
+        job['message'] = 'ارتباط با منبع قوانین بیش از حد طول کشید. دوباره تلاش کنید.'
+    except requests.exceptions.RequestException as e:
+        job['status'] = 'error'
+        job['message'] = 'خطا در ارتباط با منبع قوانین: ' + str(e)
     except Exception as e:
         job['status'] = 'error'
-        job['progress'] = 100
-        job['message'] = f'خطا در جست‌وجوی قوانین: {e}'
+        job['message'] = 'خطا در جست‌وجوی قوانین و مقررات: ' + str(e)
+
+
+# =========================================================
+# WORKER
+# =========================================================
 
 def worker(
     jid,
@@ -1977,6 +1959,118 @@ def start():
         job_id=jid,
         source_id=SOURCE_ID
     )
+
+
+def qavanin_diagnostic(session=None):
+    """Inspect Nezamat's live WordPress REST registration from Render.
+
+    This does not guess a post type. It asks /wp/v2/types which content types
+    are exposed through REST, then probes each collection's first page and
+    records the server-reported totals. It also records the generic search
+    index totals/subtypes for comparison.
+    """
+    session = session or make_qavanin_session()
+    report = {
+        'base': QAVANIN_BASE,
+        'types': [],
+        'search_index': {},
+        'errors': []
+    }
+
+    try:
+        r = session.get(
+            urljoin(QAVANIN_BASE, '/wp-json/wp/v2/types'),
+            timeout=35,
+            allow_redirects=True
+        )
+        r.raise_for_status()
+        types = r.json() if isinstance(r.json(), dict) else {}
+    except Exception as e:
+        report['errors'].append('types: ' + repr(e))
+        types = {}
+
+    for slug, info in types.items():
+        if not isinstance(info, dict):
+            continue
+        rest_base = (info.get('rest_base') or slug or '').strip('/')
+        row = {
+            'slug': slug,
+            'name': info.get('name') or '',
+            'rest_base': rest_base,
+            'viewable': info.get('viewable'),
+            'total': None,
+            'total_pages': None,
+            'sample_count': 0,
+            'sample_titles': [],
+            'error': None,
+        }
+        if rest_base:
+            try:
+                rr = session.get(
+                    urljoin(QAVANIN_BASE, '/wp-json/wp/v2/' + rest_base),
+                    params={'page': 1, 'per_page': 5},
+                    timeout=35,
+                    allow_redirects=True
+                )
+                rr.raise_for_status()
+                data = rr.json()
+                if isinstance(data, list):
+                    row['sample_count'] = len(data)
+                    for item in data[:5]:
+                        if not isinstance(item, dict):
+                            continue
+                        raw = item.get('title') or item.get('name') or ''
+                        if isinstance(raw, dict):
+                            raw = raw.get('rendered', '')
+                        title = norm(BeautifulSoup(unescape(str(raw)), 'html.parser').get_text(' ', strip=True))
+                        if title:
+                            row['sample_titles'].append(title)
+                try:
+                    row['total'] = int(rr.headers.get('X-WP-Total', '') or 0)
+                except Exception:
+                    row['total'] = 0
+                try:
+                    row['total_pages'] = int(rr.headers.get('X-WP-TotalPages', '') or 0)
+                except Exception:
+                    row['total_pages'] = 0
+            except Exception as e:
+                row['error'] = repr(e)
+        report['types'].append(row)
+
+    try:
+        sr = session.get(
+            urljoin(QAVANIN_BASE, '/wp-json/wp/v2/search'),
+            params={'page': 1, 'per_page': 100, 'type': 'post', '_fields': 'id,title,url,subtype'},
+            timeout=35,
+            allow_redirects=True
+        )
+        sr.raise_for_status()
+        data = sr.json()
+        subtype_counts = {}
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    st = (item.get('subtype') or '(empty)').strip()
+                    subtype_counts[st] = subtype_counts.get(st, 0) + 1
+        report['search_index'] = {
+            'returned': len(data) if isinstance(data, list) else 0,
+            'total': int(sr.headers.get('X-WP-Total', '') or 0),
+            'total_pages': int(sr.headers.get('X-WP-TotalPages', '') or 0),
+            'subtypes_first_100': subtype_counts,
+        }
+    except Exception as e:
+        report['errors'].append('search: ' + repr(e))
+
+    report['types'].sort(key=lambda x: (-(x.get('total') or 0), x.get('slug') or ''))
+    return report
+
+
+@app.get('/api/qavanin/diagnostic')
+def qavanin_diagnostic_route():
+    try:
+        return jsonify(qavanin_diagnostic())
+    except Exception as e:
+        return jsonify(error=repr(e)), 500
 
 
 @app.post('/api/qavanin/search')
