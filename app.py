@@ -107,7 +107,7 @@ def parse_query(q):
 
 def matches(text, query):
 
-    text = norm(text)
+    text = fa_to_en(norm(text))
 
     include, exclude = parse_query(query)
 
@@ -115,11 +115,11 @@ def matches(text, query):
         return False
 
     for item in include:
-        if norm(item) not in text:
+        if fa_to_en(norm(item)) not in text:
             return False
 
     for item in exclude:
-        if norm(item) in text:
+        if fa_to_en(norm(item)) in text:
             return False
 
     return True
