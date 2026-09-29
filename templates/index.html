@@ -169,6 +169,43 @@
             display: none;
         }
 
+
+        #analysisBtn,
+        #analysisDownloadBtn {
+            background: #6b3fa0;
+            color: white;
+            display: none;
+        }
+
+        #analysisCard {
+            display: none;
+        }
+
+        #analysisReport,
+        .raw-judgment {
+            white-space: pre-wrap;
+            line-height: 2;
+            overflow-wrap: anywhere;
+        }
+
+        #analysisReport {
+            margin-top: 18px;
+        }
+
+        .raw-judgment {
+            background: #f7f7f8;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 14px;
+            margin-top: 10px;
+        }
+
+        .raw-title {
+            margin-top: 28px;
+            font-weight: bold;
+            font-size: 17px;
+        }
+
         button:disabled {
             opacity: .6;
             cursor: not-allowed;
@@ -479,6 +516,21 @@
                 دانلود Word
             </button>
 
+
+            <button
+                id="analysisBtn"
+                type="button"
+            >
+                تحلیل رویه قضایی
+            </button>
+
+            <button
+                id="analysisDownloadBtn"
+                type="button"
+            >
+                دانلود گزارش تحلیل
+            </button>
+
         </div>
 
     </div>
@@ -593,6 +645,23 @@
 
     </div>
 
+    <div
+        class="card"
+        id="analysisCard"
+    >
+        <div class="status-title">
+            تحلیل رویه قضایی
+        </div>
+
+        <div class="help">
+            تحلیل فقط بر اساس آرای همین جست‌وجو انجام می‌شود و هیچ منبع حقوقی خارج از این نتایج مبنای گزارش نیست.
+        </div>
+
+        <div id="analysisMessage"></div>
+        <div id="analysisReport"></div>
+        <div id="rawJudgments"></div>
+    </div>
+
 </div>
 
 
@@ -601,6 +670,8 @@
 let currentJob = null;
 let timer = null;
 let currentSource = 'judgments';
+let currentAnalysis = null;
+let analysisTimer = null;
 
 
 const query =
@@ -662,6 +733,25 @@ const cancelBtn =
 
 const downloadBtn =
     document.getElementById('downloadBtn');
+
+
+const analysisBtn =
+    document.getElementById('analysisBtn');
+
+const analysisDownloadBtn =
+    document.getElementById('analysisDownloadBtn');
+
+const analysisCard =
+    document.getElementById('analysisCard');
+
+const analysisMessage =
+    document.getElementById('analysisMessage');
+
+const analysisReport =
+    document.getElementById('analysisReport');
+
+const rawJudgments =
+    document.getElementById('rawJudgments');
 
 const statusCard =
     document.getElementById('statusCard');
@@ -838,6 +928,29 @@ function resetStatus() {
 
     downloadBtn.disabled =
         false;
+
+    analysisBtn.style.display =
+        'none';
+
+    analysisBtn.disabled =
+        false;
+
+    analysisDownloadBtn.style.display =
+        'none';
+
+    currentAnalysis = null;
+
+    if (analysisTimer) {
+        clearInterval(analysisTimer);
+        analysisTimer = null;
+    }
+
+    analysisCard.style.display =
+        'none';
+
+    analysisMessage.textContent = '';
+    analysisReport.textContent = '';
+    rawJudgments.innerHTML = '';
 }
 
 
@@ -1168,9 +1281,24 @@ async function startSearch() {
                 downloadBtn.style.display =
                     'inline-block';
 
+
+                if (
+                    currentSource === 'judgments'
+                    && Number(data.found || 0) > 0
+                ) {
+                    analysisBtn.style.display =
+                        'inline-block';
+                } else {
+                    analysisBtn.style.display =
+                        'none';
+                }
+
             } else {
 
                 downloadBtn.style.display =
+                    'none';
+
+                analysisBtn.style.display =
                     'none';
             }
         }
@@ -1265,6 +1393,150 @@ async function cancelSearch() {
 }
 
 
+
+function stopAnalysisTimer() {
+
+    if (analysisTimer) {
+        clearInterval(analysisTimer);
+        analysisTimer = null;
+    }
+}
+
+
+async function startAnalysis() {
+
+    if (!currentJob || currentSource !== 'judgments') {
+        return;
+    }
+
+    analysisBtn.disabled = true;
+    analysisDownloadBtn.style.display = 'none';
+    analysisCard.style.display = 'block';
+    analysisMessage.textContent =
+        'در حال تحلیل فقط بر اساس آرای بازیابی‌شده...';
+    analysisReport.textContent = '';
+    rawJudgments.innerHTML = '';
+
+    try {
+        const response = await fetch(
+            '/api/analyze/' + encodeURIComponent(currentJob),
+            {method: 'POST'}
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'خطا در شروع تحلیل');
+        }
+
+        currentAnalysis = data.analysis_id;
+        await checkAnalysisStatus();
+        stopAnalysisTimer();
+        analysisTimer = setInterval(checkAnalysisStatus, 2500);
+
+    } catch (error) {
+        analysisMessage.textContent = error.message;
+        analysisBtn.disabled = false;
+    }
+}
+
+
+async function checkAnalysisStatus() {
+
+    if (!currentAnalysis) {
+        return;
+    }
+
+    try {
+        const response = await fetch(
+            '/api/analysis/status/' + encodeURIComponent(currentAnalysis)
+        );
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'خطا در دریافت وضعیت تحلیل');
+        }
+
+        analysisMessage.textContent = data.message || '';
+
+        if (data.status === 'done') {
+            stopAnalysisTimer();
+            await loadAnalysisReport();
+            analysisBtn.disabled = false;
+            analysisDownloadBtn.style.display = 'inline-block';
+        } else if (data.status === 'error') {
+            stopAnalysisTimer();
+            analysisBtn.disabled = false;
+        }
+
+    } catch (error) {
+        stopAnalysisTimer();
+        analysisMessage.textContent = error.message;
+        analysisBtn.disabled = false;
+    }
+}
+
+
+async function loadAnalysisReport() {
+
+    const response = await fetch(
+        '/api/analysis/report/' + encodeURIComponent(currentAnalysis)
+    );
+    const data = await response.json();
+
+    if (!response.ok) {
+        throw new Error(data.error || 'خطا در دریافت گزارش تحلیل');
+    }
+
+    analysisReport.textContent = data.report || '';
+
+    const heading = document.createElement('h2');
+    heading.textContent = '12. متن کامل آرای بازیابی‌شده';
+    rawJudgments.appendChild(heading);
+
+    const note = document.createElement('div');
+    note.className = 'help';
+    note.textContent =
+        'متن‌های زیر توسط هوش مصنوعی تولید، اصلاح یا بازنویسی نشده‌اند و مستقیماً از متن قابل مشاهده صفحه رسمی هر رأی نمایش داده می‌شوند.';
+    rawJudgments.appendChild(note);
+
+    (data.judgments || []).forEach(item => {
+        const title = document.createElement('div');
+        title.className = 'raw-title';
+        title.textContent =
+            'رأی ' + item.id + ' — ' + (item.title || 'رأی قضایی');
+
+        const linkBox = document.createElement('div');
+        const link = document.createElement('a');
+        link.href = item.url || '#';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = 'مشاهده صفحه رسمی رأی';
+        linkBox.appendChild(link);
+
+        const raw = document.createElement('div');
+        raw.className = 'raw-judgment';
+        raw.textContent = item.raw_official_text || '';
+
+        rawJudgments.appendChild(title);
+        rawJudgments.appendChild(linkBox);
+        rawJudgments.appendChild(raw);
+    });
+}
+
+
+function downloadAnalysis() {
+
+    if (!currentAnalysis) {
+        return;
+    }
+
+    window.location.href =
+        '/api/analysis/download/'
+        + encodeURIComponent(currentAnalysis);
+}
+
+
 function downloadWord() {
 
     if (!currentJob) {
@@ -1322,6 +1594,17 @@ cancelBtn.addEventListener(
 downloadBtn.addEventListener(
     'click',
     downloadWord
+);
+
+
+analysisBtn.addEventListener(
+    'click',
+    startAnalysis
+);
+
+analysisDownloadBtn.addEventListener(
+    'click',
+    downloadAnalysis
 );
 
 
@@ -1385,4 +1668,4 @@ updateSourceUI();
 
 </body>
 
-</html>
+                </html>
