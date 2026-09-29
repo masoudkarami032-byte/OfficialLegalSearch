@@ -125,6 +125,68 @@ def matches(text, query):
     return True
 
 
+
+def _norm_legal_text(s):
+    """Normalization used only for local validation of official judicial hits."""
+    s = norm(s)
+    s = fa_to_en(s)
+    s = s.replace('٫', '.').replace('٬', ',')
+    return s
+
+
+def _article_numbers_from_query(query):
+    """Return article numbers when query explicitly asks for ماده/مواد <number>."""
+    q = _norm_legal_text(query)
+    nums = []
+    for m in re.finditer(r'(?<!\w)(?:ماده|مواد)\s*(?:ی|ي)?\s*([0-9]+)', q):
+        nums.append(m.group(1))
+    return nums
+
+
+def legal_query_matches(text, query):
+    """
+    Validate official hits without confusing an article number with money, page
+    numbers, case numbers, etc.  For ordinary queries this falls back to the
+    original matcher.  For queries such as «ماده ۱۷۴», the number must occur as
+    a legal article reference: either directly after ماده, or inside a short
+    «مواد ...» list/range.
+    """
+    article_nums = _article_numbers_from_query(query)
+    if not article_nums:
+        return matches(text, query)
+
+    t = _norm_legal_text(text)
+
+    for num in article_nums:
+        n = re.escape(num)
+
+        # Direct forms: ماده 174 / ماده‌ی 174 / ماده شماره 174
+        direct = rf'(?<!\w)ماده\s*(?:ی\s*)?(?:شماره\s*)?{n}(?![0-9])'
+        if re.search(direct, t):
+            continue
+
+        # List/range forms: مواد 169، 170 ... 174 / مواد 168 تا 174
+        # Keep the window deliberately short so unrelated numbers later in the
+        # judgment (amounts, dates, pages) are not treated as article numbers.
+        ok = False
+        for m in re.finditer(r'(?<!\w)مواد(?P<tail>.{0,140})', t):
+            tail = m.group('tail')
+            # stop at a likely sentence boundary
+            tail = re.split(r'[.!؟?؛\n]', tail, maxsplit=1)[0]
+            if re.search(rf'(?<![0-9]){n}(?![0-9])', tail):
+                ok = True
+                break
+        if not ok:
+            return False
+
+    # Preserve NOT clauses, if the user supplied any.
+    _, exclude = parse_query(query)
+    for item in exclude:
+        if _norm_legal_text(item) in t:
+            return False
+
+    return True
+
 # =========================================================
 # HTTP SESSION
 # =========================================================
@@ -1633,27 +1695,22 @@ def worker(
                         session
                     )
 
-                    # The official search engine has already decided that this
-                    # decision matches the user's query and selected search fields.
-                    # Do NOT re-filter official results locally: differences in
-                    # normalization/indexing would incorrectly discard valid hits.
+                    # Validate the official hit against the selected fields.
+                    # In particular, a search such as «ماده ۱۷۴» must not accept
+                    # a judgment merely because 174 appears in an amount, page
+                    # number, case number, etc.
                     official_locations = []
-                    if search_title:
+                    if search_title and legal_query_matches(vote.get('title', ''), query):
                         official_locations.append('عنوان')
-                    if search_abstract:
+                    if search_abstract and legal_query_matches(vote.get('abstract', ''), query):
                         official_locations.append('پیام')
-                    if search_text:
+                    if search_text and legal_query_matches(vote.get('body', ''), query):
                         official_locations.append('متن رأی')
 
-                    vote['matched_in'] = official_locations
-
-                    job['results'].append(
-                        vote
-                    )
-
-                    job['found'] = len(
-                        job['results']
-                    )
+                    if official_locations:
+                        vote['matched_in'] = official_locations
+                        job['results'].append(vote)
+                        job['found'] = len(job['results'])
 
                 except Exception:
 
