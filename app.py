@@ -946,20 +946,21 @@ def qavanin_search_page(
 
 
 def qavanin_rest_page(session, query=None, page=1, per_page=100):
-    """Enumerate Nezamat's complete searchable WordPress index.
+    """Enumerate Nezamat's real laws/posts collection page by page.
 
-    Do NOT pass the user's query to WordPress here. On Nezamat the remote
-    search can cap the candidate set at 100. Instead we page through the
-    generic WP search index with no search term and apply matching locally.
-    Leaving subtype unset is deliberate: it avoids losing searchable custom
-    post types that are not exposed by /wp/v2/posts.
+    Diagnostic data from Nezamat confirms that the legal corpus is the
+    WordPress ``post`` collection (rest_base=posts) with about 41.9k records.
+    The user's query is intentionally NOT sent to WordPress; matching is done
+    locally so remote search ranking/candidate limits cannot truncate results.
     """
-    url = urljoin(QAVANIN_BASE, '/wp-json/wp/v2/search')
+    url = urljoin(QAVANIN_BASE, '/wp-json/wp/v2/posts')
     params = {
         'page': max(1, int(page)),
         'per_page': min(max(int(per_page), 1), 100),
-        'type': 'post',
-        '_fields': 'id,title,url,subtype'
+        'status': 'publish',
+        'orderby': 'date',
+        'order': 'desc',
+        '_fields': 'id,title,link'
     }
     response = session.get(url, params=params, timeout=35, allow_redirects=True)
     response.raise_for_status()
@@ -968,20 +969,21 @@ def qavanin_rest_page(session, query=None, page=1, per_page=100):
     items = []
     seen = set()
     for row in data if isinstance(data, list) else []:
-        href = (row.get('url') or '').strip()
+        href = (row.get('link') or '').strip()
         raw_title = row.get('title') or ''
-        title = norm(BeautifulSoup(unescape(str(raw_title)), 'html.parser').get_text(' ', strip=True))
+        if isinstance(raw_title, dict):
+            raw_title = raw_title.get('rendered', '')
+        title = norm(
+            BeautifulSoup(unescape(str(raw_title)), 'html.parser')
+            .get_text(' ', strip=True)
+        )
         if not href or not _same_nezamat_host(href):
             continue
         key = href.split('#', 1)[0].rstrip('/') + '/'
         if key in seen:
             continue
         seen.add(key)
-        items.append({
-            'url': key,
-            'title': title or 'قانون یا مقرره',
-            'subtype': (row.get('subtype') or '').strip()
-        })
+        items.append({'url': key, 'title': title or 'قانون یا مقرره', 'subtype': 'post'})
 
     def _header_int(name):
         try:
@@ -1236,7 +1238,7 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
     session = make_qavanin_session()
 
     try:
-        job['message'] = 'در حال پیمایش فهرست کامل قابل جست‌وجوی نظامات...'
+        job['message'] = 'در حال پیمایش مجموعه کامل قوانین و مقررات نظامات...'
 
         # Enumerate the COMPLETE searchable index. The user query is matched
         # locally so Nezamat's 100-candidate remote-search cap cannot truncate
@@ -1252,7 +1254,7 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
             job['message'] = 'فهرست قابل جست‌وجوی نظامات خالی برگردانده شد.'
             return
 
-        pages_to_scan = min(catalog_pages or max_pages, max_pages)
+        pages_to_scan = catalog_pages or max_pages
         job['site_total_pages'] = catalog_pages
         job['total_pages'] = pages_to_scan
         job['official_results'] = catalog_total
