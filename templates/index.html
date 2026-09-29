@@ -1050,6 +1050,18 @@ async function startSearch() {
                 : 'judgments';
 
 
+        if (sourceLaws.checked && data.browser_url) {
+            const qavaninWindow = window.open(data.browser_url, '_blank');
+            if (!qavaninWindow) {
+                message.textContent =
+                    'مرورگر باز شدن qavanin.ir را مسدود کرد. Pop-up را برای این سایت مجاز کنید و دوباره جست‌وجو را بزنید.';
+            } else {
+                message.textContent =
+                    'qavanin.ir باز شد؛ افزونه در حال دریافت نتایج رسمی است...';
+            }
+        }
+
+
         timer =
             setInterval(
                 checkStatus,
