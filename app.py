@@ -945,25 +945,23 @@ def qavanin_search_page(
     return response.text
 
 
-def qavanin_rest_page(session, query, page=1, per_page=100):
-    """Fetch Nezamat search candidates with real WordPress pagination.
+def qavanin_rest_page(session, query=None, page=1, per_page=100):
+    """Fetch the complete Nezamat posts collection page-by-page.
 
-    Primary endpoint is /wp/v2/posts rather than the generic /wp/v2/search.
-    Some WordPress installations cap or customize the generic search endpoint
-    so it can report only the first 100 matches.  The posts collection exposes
-    normal collection pagination through X-WP-Total / X-WP-TotalPages.
+    IMPORTANT: the remote ``search=...`` filter is intentionally NOT used.
+    Nezamat/WordPress can cap or customize search results at 100 candidates.
+    We therefore enumerate published posts and apply the user's query locally.
     """
     per_page = min(max(int(per_page), 1), 100)
     page = max(1, int(page))
 
-    # Primary: posts collection. It supports search + deterministic pagination.
     url = urljoin(QAVANIN_BASE, '/wp-json/wp/v2/posts')
     params = {
-        'search': query,
         'page': page,
         'per_page': per_page,
         'status': 'publish',
-        'orderby': 'relevance',
+        'orderby': 'date',
+        'order': 'desc',
         '_fields': 'id,title,link'
     }
 
@@ -1245,13 +1243,13 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
     try:
         job['message'] = 'در حال جست‌وجوی قوانین و مقررات در نظامات...'
 
-        # Preferred engine: WordPress REST API, 100 candidates per page.
-        # This fixes the previous 15-document ceiling and gives us the real
-        # number of result pages directly from X-WP-TotalPages.
+        # Enumerate the COMPLETE published collection.  Do not pass the user's
+        # query to WordPress: its search endpoint can cap the candidate set at
+        # 100.  The query is applied locally below by law_matches().
         use_rest = True
         try:
             first_items, reported_total, real_total_pages = qavanin_rest_page(
-                session, query, page=1, per_page=100
+                session, page=1, per_page=100
             )
         except Exception:
             use_rest = False
@@ -1298,7 +1296,7 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                 items = first_items
             elif use_rest:
                 try:
-                    items, _, _ = qavanin_rest_page(session, query, page=page, per_page=100)
+                    items, _, _ = qavanin_rest_page(session, page=page, per_page=100)
                 except requests.exceptions.HTTPError as e:
                     # WordPress returns 400 when page exceeds the final page.
                     if e.response is not None and e.response.status_code == 400:
@@ -1332,6 +1330,13 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                 job['checked'] += 1
 
                 try:
+                    # For title-only searches the REST collection already gives
+                    # us the document title. Skip expensive document downloads
+                    # for non-matching titles, while still counting every post
+                    # as an examined document.
+                    if search_title and not search_text and not matches(item.get('title', ''), query):
+                        continue
+
                     law = fetch_law(url, session)
                     if law['title'] == 'قانون یا مقرره':
                         law['title'] = item['title']
