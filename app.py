@@ -920,15 +920,18 @@ def qavanin_search_page(
     search_text=False
 ):
     """Fetch a Nezamat HTML search-results page (fallback path)."""
+    # Keep Nezamat's own search engine, but paginate it with WordPress's
+    # canonical `paged` query variable.  Using /page/N/ together with ?s=...
+    # can be canonicalised back to the first search page on this site, which
+    # made page 2 repeat and stopped the worker at the first 100 REST hits.
     params = {
         's': query,
         'post_type': 'post'
     }
+    if int(page) > 1:
+        params['paged'] = int(page)
 
-    url = QAVANIN_LIST if page <= 1 else urljoin(
-        QAVANIN_BASE,
-        f'/page/{int(page)}/'
-    )
+    url = QAVANIN_LIST
 
     response = session.get(
         url,
@@ -945,26 +948,23 @@ def qavanin_search_page(
     return response.text
 
 
-def qavanin_rest_page(session, query=None, page=1, per_page=100):
-    """Fetch the complete Nezamat posts collection page-by-page.
+def qavanin_rest_page(session, query, page=1, per_page=100):
+    """Use Nezamat's WordPress REST search API.
 
-    IMPORTANT: the remote ``search=...`` filter is intentionally NOT used.
-    Nezamat/WordPress can cap or customize search results at 100 candidates.
-    We therefore enumerate published posts and apply the user's query locally.
+    The old HTML scraper could stop after the first 15 cards because the
+    site's search pagination is not reliably represented by /page/N/ on all
+    deployments.  WordPress REST exposes deterministic pagination and the
+    X-WP-Total / X-WP-TotalPages headers.
     """
-    per_page = min(max(int(per_page), 1), 100)
-    page = max(1, int(page))
-
-    url = urljoin(QAVANIN_BASE, '/wp-json/wp/v2/posts')
+    url = urljoin(QAVANIN_BASE, '/wp-json/wp/v2/search')
     params = {
-        'page': page,
-        'per_page': per_page,
-        'status': 'publish',
-        'orderby': 'date',
-        'order': 'desc',
-        '_fields': 'id,title,link'
+        'search': query,
+        'page': max(1, int(page)),
+        'per_page': min(max(int(per_page), 1), 100),
+        'type': 'post',
+        'subtype': 'post',
+        '_fields': 'id,title,url,subtype'
     }
-
     response = session.get(url, params=params, timeout=35, allow_redirects=True)
     response.raise_for_status()
     data = response.json()
@@ -972,14 +972,9 @@ def qavanin_rest_page(session, query=None, page=1, per_page=100):
     items = []
     seen = set()
     for row in data if isinstance(data, list) else []:
-        href = (row.get('link') or row.get('url') or '').strip()
+        href = (row.get('url') or '').strip()
         raw_title = row.get('title') or ''
-        if isinstance(raw_title, dict):
-            raw_title = raw_title.get('rendered', '')
-        title = norm(
-            BeautifulSoup(unescape(str(raw_title)), 'html.parser')
-            .get_text(' ', strip=True)
-        )
+        title = norm(BeautifulSoup(unescape(str(raw_title)), 'html.parser').get_text(' ', strip=True))
         if not href or not _same_nezamat_host(href):
             continue
         key = href.split('#', 1)[0].rstrip('/') + '/'
@@ -1243,24 +1238,16 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
     try:
         job['message'] = 'در حال جست‌وجوی قوانین و مقررات در نظامات...'
 
-        # Enumerate the COMPLETE published collection.  Do not pass the user's
-        # query to WordPress: its search endpoint can cap the candidate set at
-        # 100.  The query is applied locally below by law_matches().
-        use_rest = True
-        try:
-            first_items, reported_total, real_total_pages = qavanin_rest_page(
-                session, page=1, per_page=100
-            )
-        except Exception:
-            use_rest = False
-            first_html = qavanin_search_page(
-                session, query, page=1,
-                search_title=search_title,
-                search_text=search_text
-            )
-            first_items = get_law_links(first_html)
-            reported_total = extract_qavanin_total_results(first_html)
-            real_total_pages = 0
+        # Use Nezamat's own public search so the candidate set remains the
+        # same one that previously produced the correct 39 title matches.
+        # Pagination is handled by `paged=N` in qavanin_search_page.
+        first_html = qavanin_search_page(
+            session, query, page=1,
+            search_title=search_title,
+            search_text=search_text
+        )
+        first_items = get_law_links(first_html)
+        reported_total = extract_qavanin_total_results(first_html)
 
         if not first_items:
             job['status'] = 'done'
@@ -1269,14 +1256,9 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
             job['message'] = 'برای این عبارت نتیجه‌ای در منبع قوانین یافت نشد.'
             return
 
-        if use_rest and real_total_pages > 0:
-            pages_to_scan = min(real_total_pages, max_pages)
-            job['site_total_pages'] = real_total_pages
-        else:
-            pages_to_scan = max_pages
-            job['site_total_pages'] = 0
-
+        pages_to_scan = max_pages
         job['total_pages'] = pages_to_scan
+        job['site_total_pages'] = 0
         job['official_results'] = reported_total
 
         seen = set()
@@ -1287,21 +1269,10 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                 break
 
             job['current_page'] = page
-            if use_rest and real_total_pages:
-                job['message'] = f'در حال بررسی صفحه {page} از {pages_to_scan} قوانین و مقررات...'
-            else:
-                job['message'] = f'در حال بررسی صفحه {page} قوانین و مقررات...'
+            job['message'] = f'در حال بررسی صفحه {page} قوانین و مقررات...'
 
             if page == 1:
                 items = first_items
-            elif use_rest:
-                try:
-                    items, _, _ = qavanin_rest_page(session, page=page, per_page=100)
-                except requests.exceptions.HTTPError as e:
-                    # WordPress returns 400 when page exceeds the final page.
-                    if e.response is not None and e.response.status_code == 400:
-                        break
-                    raise
             else:
                 html = qavanin_search_page(
                     session, query, page=page,
@@ -1330,13 +1301,6 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                 job['checked'] += 1
 
                 try:
-                    # For title-only searches the REST collection already gives
-                    # us the document title. Skip expensive document downloads
-                    # for non-matching titles, while still counting every post
-                    # as an examined document.
-                    if search_title and not search_text and not matches(item.get('title', ''), query):
-                        continue
-
                     law = fetch_law(url, session)
                     if law['title'] == 'قانون یا مقرره':
                         law['title'] = item['title']
