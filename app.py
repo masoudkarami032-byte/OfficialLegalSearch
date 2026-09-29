@@ -1512,10 +1512,16 @@ def worker(
 
             real_total_pages = 1
 
-        pages_to_scan = min(
-            real_total_pages,
-            max_pages
-        )
+        # Do not trust the site's PageNumbers selector as the final page count.
+        # On ara.jri.ac.ir it can under-report pages (e.g. 165 official hits while
+        # the selector exposes only 6 pages).  Estimate from the official hit count
+        # and the number of links actually returned on page 1, then keep paging
+        # until the official total is collected or the site stops yielding new hits.
+        if official_total and first_links:
+            estimated_pages = math.ceil(official_total / max(1, len(first_links)))
+            pages_to_scan = min(max(real_total_pages, estimated_pages), max_pages)
+        else:
+            pages_to_scan = min(real_total_pages, max_pages)
 
         job['total_pages'] = (
             pages_to_scan
@@ -1597,20 +1603,12 @@ def worker(
                 and previous_links is not None
                 and current_links == previous_links
             ):
+                # A repeated page means the site has stopped advancing.  Preserve
+                # everything already collected instead of converting valid results
+                # into an error.
+                break
 
-                job['status'] = 'error'
-
-                job['message'] = (
-                    f'صفحه {page} همان آرای '
-                    'صفحه قبلی را برگرداند؛ '
-                    'صفحه‌بندی سامانه صحیح انجام نشد.'
-                )
-
-                return
-
-            previous_links = (
-                current_links
-            )
+            previous_links = current_links
 
             new_links = []
 
@@ -1682,6 +1680,11 @@ def worker(
                 f'{pages_to_scan} بررسی شد.'
             )
 
+            # The official result count is authoritative. Stop as soon as every
+            # unique official result has been collected.
+            if official_total is not None and len(seen) >= official_total:
+                break
+
             time.sleep(0.15)
 
         if job['cancel']:
@@ -1701,9 +1704,14 @@ def worker(
 
             job['progress'] = 100
 
-            job['message'] = (
-                'جست‌وجو تکمیل شد.'
-            )
+            if official_total is not None:
+                job['message'] = (
+                    f'جست‌وجو تکمیل شد. سامانه رسمی {official_total} نتیجه اعلام کرد؛ '
+                    f'{job["found"]} رأی یکتا دریافت شد و '
+                    f'{job["failed_items"]} رأی با خطای دریافت مواجه شد.'
+                )
+            else:
+                job['message'] = 'جست‌وجو تکمیل شد.'
 
     except Exception as e:
 
