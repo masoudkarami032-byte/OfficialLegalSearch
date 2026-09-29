@@ -12,6 +12,7 @@ import uuid
 import os
 import time
 import math
+import sqlite3
 
 from urllib.parse import urljoin
 
@@ -122,6 +123,246 @@ def matches(text, query):
             return False
 
     return True
+
+
+# =========================================================
+# LAWS DATABASE
+# =========================================================
+
+DB_PATH = os.getenv(
+    'LAWS_DB_PATH',
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        'laws.db'
+    )
+)
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_laws_db():
+    conn = get_db()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS laws (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                qavanin_id TEXT UNIQUE,
+                title TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                law_type TEXT NOT NULL DEFAULT '',
+                approver TEXT NOT NULL DEFAULT '',
+                approval_date TEXT NOT NULL DEFAULT '',
+                notification_number TEXT NOT NULL DEFAULT '',
+                notification_date TEXT NOT NULL DEFAULT '',
+                publication_date TEXT NOT NULL DEFAULT '',
+                official_gazette_number TEXT NOT NULL DEFAULT '',
+                execution_date TEXT NOT NULL DEFAULT '',
+                law_status TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                attribute_url TEXT NOT NULL DEFAULT '',
+                status_url TEXT NOT NULL DEFAULT '',
+                related_url TEXT NOT NULL DEFAULT '',
+                subject_url TEXT NOT NULL DEFAULT '',
+                image_url TEXT NOT NULL DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_laws_qavanin_id '
+            'ON laws(qavanin_id)'
+        )
+        conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_laws_title '
+            'ON laws(title)'
+        )
+        conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_laws_approval_date '
+            'ON laws(approval_date)'
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def build_qavanin_urls(qavanin_id):
+    qid = str(qavanin_id or '').strip()
+    return {
+        'source_url':
+            f'{QAVANIN_BASE}/Law/TreeText/?IDS={qid}',
+        'attribute_url':
+            f'{QAVANIN_BASE}/Law/Attribute/?IDS={qid}',
+        'status_url':
+            f'{QAVANIN_BASE}/Law/StatusIndex/?IDS={qid}',
+        'related_url':
+            f'{QAVANIN_BASE}/Law/RelatedIndex/?IDS={qid}',
+        'subject_url':
+            f'{QAVANIN_BASE}/Law/SubjectIndex/?IDS={qid}',
+        'image_url':
+            f'{QAVANIN_BASE}/Law/ImageText/?IDS={qid}'
+    }
+
+
+def save_law(
+    qavanin_id,
+    title='',
+    body='',
+    law_type='',
+    approver='',
+    approval_date='',
+    notification_number='',
+    notification_date='',
+    publication_date='',
+    official_gazette_number='',
+    execution_date='',
+    law_status=''
+):
+    qavanin_id = str(qavanin_id or '').strip()
+
+    if not qavanin_id:
+        raise ValueError('شناسه IDS قانون الزامی است.')
+
+    urls = build_qavanin_urls(qavanin_id)
+    conn = get_db()
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO laws (
+                qavanin_id,
+                title,
+                body,
+                law_type,
+                approver,
+                approval_date,
+                notification_number,
+                notification_date,
+                publication_date,
+                official_gazette_number,
+                execution_date,
+                law_status,
+                source_url,
+                attribute_url,
+                status_url,
+                related_url,
+                subject_url,
+                image_url
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            ON CONFLICT(qavanin_id)
+            DO UPDATE SET
+                title = excluded.title,
+                body = excluded.body,
+                law_type = excluded.law_type,
+                approver = excluded.approver,
+                approval_date = excluded.approval_date,
+                notification_number = excluded.notification_number,
+                notification_date = excluded.notification_date,
+                publication_date = excluded.publication_date,
+                official_gazette_number = excluded.official_gazette_number,
+                execution_date = excluded.execution_date,
+                law_status = excluded.law_status,
+                source_url = excluded.source_url,
+                attribute_url = excluded.attribute_url,
+                status_url = excluded.status_url,
+                related_url = excluded.related_url,
+                subject_url = excluded.subject_url,
+                image_url = excluded.image_url,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                qavanin_id,
+                norm(title),
+                norm(body),
+                norm(law_type),
+                norm(approver),
+                norm(approval_date),
+                norm(notification_number),
+                norm(notification_date),
+                norm(publication_date),
+                norm(official_gazette_number),
+                norm(execution_date),
+                norm(law_status),
+                urls['source_url'],
+                urls['attribute_url'],
+                urls['status_url'],
+                urls['related_url'],
+                urls['subject_url'],
+                urls['image_url']
+            )
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def search_laws_database(
+    query,
+    search_title=True,
+    search_text=False,
+    limit=10000
+):
+    include, exclude = parse_query(query)
+
+    if not include:
+        return []
+
+    conn = get_db()
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM laws
+            ORDER BY approval_date DESC, id DESC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    results = []
+
+    for row in rows:
+        law = dict(row)
+        selected = []
+
+        if search_title:
+            selected.append(law.get('title', ''))
+
+        if search_text:
+            selected.append(law.get('body', ''))
+
+        if not matches(' '.join(selected), query):
+            continue
+
+        locations = []
+
+        if search_title and matches(law.get('title', ''), query):
+            locations.append('عنوان')
+
+        if search_text and matches(law.get('body', ''), query):
+            locations.append('متن قانون')
+
+        law['matched_in'] = locations
+        law['url'] = law.get('source_url', '')
+        law['abstract'] = ''
+        law['source'] = QAVANIN_SOURCE_NAME
+
+        results.append(law)
+
+        if len(results) >= limit:
+            break
+
+    return results
 
 
 # =========================================================
@@ -516,9 +757,8 @@ def official_search(
         data=payload,
         timeout=30,
         allow_redirects=True
-    )
-
-    response.raise_for_status()
+)
+        response.raise_for_status()
 
     response.encoding = (
         response.apparent_encoding
@@ -881,47 +1121,82 @@ def matched_in(
 # =========================================================
 
 def make_qavanin_session():
+
     session = requests.Session()
+
     session.headers.update({
         'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
             'AppleWebKit/537.36 (KHTML, like Gecko) '
             'Chrome/153.0.0.0 Safari/537.36',
+
         'Accept':
             'text/html,application/xhtml+xml,application/xml;'
             'q=0.9,image/avif,image/webp,*/*;q=0.8',
+
         'Accept-Language':
             'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Upgrade-Insecure-Requests': '1',
-        'Referer': QAVANIN_LIST
+
+        'Upgrade-Insecure-Requests':
+            '1',
+
+        'Referer':
+            QAVANIN_LIST
     })
+
     return session
 
 
 def qavanin_is_challenge(html):
-    lower = (html or '').lower()
+
+    lower = (
+        html
+        or ''
+    ).lower()
+
     markers = (
         'transferring to the website',
         'error-section--waiting',
         'istehrantimezone',
         'arvancloud'
     )
-    return any(x in lower for x in markers)
+
+    return any(
+        x in lower
+        for x in markers
+    )
 
 
-def qavanin_search_page(session, query, page=1, search_title=True, search_text=False):
+def qavanin_search_page(
+    session,
+    query,
+    page=1,
+    search_title=True,
+    search_text=False
+):
+
     params = [
         ('CAPTION', query),
         ('Zone', ''),
     ]
 
     if search_title:
-        params.append(('IsTitleSearch', 'true'))
-    params.append(('IsTitleSearch', 'false'))
+        params.append(
+            ('IsTitleSearch', 'true')
+        )
+
+    params.append(
+        ('IsTitleSearch', 'false')
+    )
 
     if search_text:
-        params.append(('IsTextSearch', 'true'))
-    params.append(('IsTextSearch', 'false'))
+        params.append(
+            ('IsTextSearch', 'true')
+        )
+
+    params.append(
+        ('IsTextSearch', 'false')
+    )
 
     params.extend([
         ('_isLaw', 'false'),
@@ -959,49 +1234,84 @@ def qavanin_search_page(session, query, page=1, search_title=True, search_text=F
         timeout=30,
         allow_redirects=True
     )
-    response.raise_for_status()
-    response.encoding = response.apparent_encoding or 'utf-8'
 
-    if qavanin_is_challenge(response.text):
+    response.raise_for_status()
+
+    response.encoding = (
+        response.apparent_encoding
+        or 'utf-8'
+    )
+
+    if qavanin_is_challenge(
+        response.text
+    ):
+
         raise RuntimeError(
-            'سامانه قوانین به این سرور صفحه امنیتی ArvanCloud برگرداند.'
+            'سامانه قوانین به این سرور '
+            'صفحه امنیتی ArvanCloud برگرداند.'
         )
 
     return response.text
 
 
 def get_law_links(html):
-    soup = BeautifulSoup(html, 'html.parser')
+
+    soup = BeautifulSoup(
+        html,
+        'html.parser'
+    )
+
     results = []
     seen = set()
 
-    for a in soup.find_all('a', href=True):
-        href = (a.get('href') or '').strip()
-        href_lower = href.lower()
+    for a in soup.find_all(
+        'a',
+        href=True
+    ):
 
-        # Qavanin document links are under /Law/.
+        href = (
+            a.get('href')
+            or ''
+        ).strip()
+
+        href_lower = (
+            href.lower()
+        )
+
         if '/law/' not in href_lower:
             continue
 
-        # Ignore obvious navigation/search/static links.
-        if any(x in href_lower for x in (
-            '/law/index',
-            '/law/search',
-            'javascript:',
-            '#'
-        )):
+        if any(
+            x in href_lower
+            for x in (
+                '/law/index',
+                '/law/search',
+                'javascript:',
+                '#'
+            )
+        ):
             continue
 
-        url = urljoin(QAVANIN_BASE, href)
+        url = urljoin(
+            QAVANIN_BASE,
+            href
+        )
 
         if url in seen:
             continue
 
-        title = norm(a.get_text(' ', strip=True))
+        title = norm(
+            a.get_text(
+                ' ',
+                strip=True
+            )
+        )
+
         if not title:
             continue
 
         seen.add(url)
+
         results.append({
             'url': url,
             'title': title
@@ -1011,8 +1321,18 @@ def get_law_links(html):
 
 
 def extract_qavanin_total_results(html):
-    soup = BeautifulSoup(html, 'html.parser')
-    page_text = norm(soup.get_text(' ', strip=True))
+
+    soup = BeautifulSoup(
+        html,
+        'html.parser'
+    )
+
+    page_text = norm(
+        soup.get_text(
+            ' ',
+            strip=True
+        )
+    )
 
     patterns = [
         r'تعداد\s*یافته\s*ها\s*[:：]?\s*([0-9۰-۹,٬]+)',
@@ -1021,56 +1341,115 @@ def extract_qavanin_total_results(html):
     ]
 
     for pattern in patterns:
-        m = re.search(pattern, page_text)
+
+        m = re.search(
+            pattern,
+            page_text
+        )
+
         if not m:
             continue
 
-        value = fa_to_en(m.group(1)).replace(',', '').replace('٬', '')
+        value = fa_to_en(
+            m.group(1)
+        )
+
+        value = (
+            value
+            .replace(',', '')
+            .replace('٬', '')
+        )
+
         try:
             return int(value)
+
         except ValueError:
             pass
 
     return None
 
 
-def fetch_law(url, session):
+def fetch_law(
+    url,
+    session
+):
+
     response = session.get(
         url,
         timeout=30,
         allow_redirects=True
     )
-    response.raise_for_status()
-    response.encoding = response.apparent_encoding or 'utf-8'
 
-    if qavanin_is_challenge(response.text):
+    response.raise_for_status()
+
+    response.encoding = (
+        response.apparent_encoding
+        or 'utf-8'
+    )
+
+    if qavanin_is_challenge(
+        response.text
+    ):
+
         raise RuntimeError(
-            'صفحه قانون توسط لایه امنیتی ArvanCloud مسدود شد.'
+            'صفحه قانون توسط لایه امنیتی '
+            'ArvanCloud مسدود شد.'
         )
 
-    soup = BeautifulSoup(response.text, 'html.parser')
+    soup = BeautifulSoup(
+        response.text,
+        'html.parser'
+    )
 
-    for tag in soup(['script', 'style', 'noscript']):
+    for tag in soup([
+        'script',
+        'style',
+        'noscript'
+    ]):
+
         tag.decompose()
 
-    full_text = norm(soup.get_text(' ', strip=True))
+    full_text = norm(
+        soup.get_text(
+            ' ',
+            strip=True
+        )
+    )
 
     title = ''
-    for selector in ('h1', 'h2', 'h3'):
-        h = soup.find(selector)
+
+    for selector in (
+        'h1',
+        'h2',
+        'h3'
+    ):
+
+        h = soup.find(
+            selector
+        )
+
         if h:
-            candidate = norm(h.get_text(' ', strip=True))
+
+            candidate = norm(
+                h.get_text(
+                    ' ',
+                    strip=True
+                )
+            )
+
             if candidate:
+
                 title = candidate
                 break
 
     if not title:
-        title = 'قانون یا مقرره'
+
+        title = (
+            'قانون یا مقرره'
+        )
 
     body = full_text
 
-    # Remove common site-navigation material when a recognizable
-    # document-text marker is available.
     starts = [
         'متن مصوبه',
         'متن قانون',
@@ -1078,9 +1457,18 @@ def fetch_law(url, session):
         'ماده 1',
         'ماده ۱'
     ]
-    positions = [body.find(x) for x in starts if body.find(x) != -1]
+
+    positions = [
+        body.find(x)
+        for x in starts
+        if body.find(x) != -1
+    ]
+
     if positions:
-        body = body[min(positions):]
+
+        body = body[
+            min(positions):
+        ]
 
     return {
         'url': url,
@@ -1088,33 +1476,89 @@ def fetch_law(url, session):
         'abstract': '',
         'body': norm(body),
         'text': full_text,
-        'source': QAVANIN_SOURCE_NAME
+        'source':
+            QAVANIN_SOURCE_NAME
     }
 
 
-def law_matches(law, query, search_title, search_text):
+def law_matches(
+    law,
+    query,
+    search_title,
+    search_text
+):
+
     selected = []
 
     if search_title:
-        selected.append(law.get('title', ''))
+
+        selected.append(
+            law.get(
+                'title',
+                ''
+            )
+        )
 
     if search_text:
-        selected.append(law.get('body', ''))
 
-    return matches(' '.join(selected), query)
+        selected.append(
+            law.get(
+                'body',
+                ''
+            )
+        )
+
+    return matches(
+        ' '.join(selected),
+        query
+    )
 
 
-def law_matched_in(law, query, search_title, search_text):
+def law_matched_in(
+    law,
+    query,
+    search_title,
+    search_text
+):
+
     locations = []
 
-    if search_title and matches(law.get('title', ''), query):
-        locations.append('عنوان')
+    if (
+        search_title
+        and matches(
+            law.get(
+                'title',
+                ''
+            ),
+            query
+        )
+    ):
 
-    if search_text and matches(law.get('body', ''), query):
-        locations.append('متن قانون')
+        locations.append(
+            'عنوان'
+        )
+
+    if (
+        search_text
+        and matches(
+            law.get(
+                'body',
+                ''
+            ),
+            query
+        )
+    ):
+
+        locations.append(
+            'متن قانون'
+        )
 
     return locations
 
+
+# =========================================================
+# QAVANIN DATABASE WORKER
+# =========================================================
 
 def qavanin_worker(
     jid,
@@ -1123,157 +1567,88 @@ def qavanin_worker(
     search_title,
     search_text
 ):
+
     job = JOBS[jid]
-    session = make_qavanin_session()
 
     try:
-        job['message'] = 'در حال جست‌وجو در سامانه ملی قوانین و مقررات...'
 
-        first_html = qavanin_search_page(
-            session,
+        job['message'] = (
+            'در حال جست‌وجو در '
+            'پایگاه داده قوانین...'
+        )
+
+        results = search_laws_database(
             query,
-            page=1,
             search_title=search_title,
             search_text=search_text
         )
 
-        first_items = get_law_links(first_html)
-        official_total = extract_qavanin_total_results(first_html)
+        job['checked'] = len(
+            results
+        )
 
-        if not first_items:
-            job['status'] = 'done'
-            job['progress'] = 100
-            job['total_pages'] = 0
-            job['message'] = 'برای این عبارت نتیجه‌ای در سامانه قوانین یافت نشد.'
-            return
+        job['results'] = (
+            results
+        )
 
-        if official_total is not None:
-            real_total_pages = max(
-                1,
-                math.ceil(official_total / QAVANIN_PAGE_SIZE)
-            )
-        else:
-            real_total_pages = max_pages
+        job['found'] = len(
+            results
+        )
 
-        pages_to_scan = min(real_total_pages, max_pages)
+        job['total_pages'] = (
+            1 if results else 0
+        )
 
-        job['total_pages'] = pages_to_scan
-        job['site_total_pages'] = real_total_pages
-        job['official_results'] = official_total
+        job['site_total_pages'] = (
+            1 if results else 0
+        )
 
-        seen = set()
-        previous_urls = None
+        job['current_page'] = (
+            1 if results else 0
+        )
 
-        for page in range(1, pages_to_scan + 1):
-            if job['cancel']:
-                break
+        job['completed_pages'] = (
+            1 if results else 0
+        )
 
-            job['current_page'] = page
-            job['message'] = (
-                f'در حال بررسی صفحه {page} از {pages_to_scan} قوانین'
-            )
+        job['official_results'] = (
+            len(results)
+        )
 
-            if page == 1:
-                html = first_html
-            else:
-                html = qavanin_search_page(
-                    session,
-                    query,
-                    page=page,
-                    search_title=search_title,
-                    search_text=search_text
-                )
+        job['progress'] = 100
 
-            items = get_law_links(html)
-            current_urls = {x['url'] for x in items}
+        job['status'] = 'done'
 
-            if not items:
-                break
+        if results:
 
-            if (
-                page > 1
-                and previous_urls is not None
-                and current_urls == previous_urls
-            ):
-                job['status'] = 'error'
-                job['message'] = (
-                    f'صفحه {page} همان نتایج صفحه قبلی را برگرداند؛ '
-                    'صفحه‌بندی سامانه قوانین صحیح انجام نشد.'
-                )
-                return
-
-            previous_urls = current_urls
-
-            for item in items:
-                if job['cancel']:
-                    break
-
-                url = item['url']
-                if url in seen:
-                    continue
-
-                seen.add(url)
-                job['checked'] += 1
-
-                try:
-                    law = fetch_law(url, session)
-
-                    # Prefer the result-list title when the document page
-                    # does not expose a useful heading.
-                    if law['title'] == 'قانون یا مقرره':
-                        law['title'] = item['title']
-
-                    if law_matches(
-                        law,
-                        query,
-                        search_title,
-                        search_text
-                    ):
-                        law['matched_in'] = law_matched_in(
-                            law,
-                            query,
-                            search_title,
-                            search_text
-                        )
-                        job['results'].append(law)
-                        job['found'] = len(job['results'])
-
-                except Exception:
-                    job['failed_items'] += 1
-
-            job['completed_pages'] = page
-            job['progress'] = min(
-                99,
-                round(page / pages_to_scan * 100, 1)
-            )
-            job['message'] = (
-                f'صفحه {page} از {pages_to_scan} قوانین بررسی شد.'
-            )
-
-            time.sleep(0.15)
-
-        if job['cancel']:
-            job['status'] = 'cancelled'
-            job['message'] = 'جست‌وجو به درخواست کاربر متوقف شد.'
-        elif job['status'] == 'running':
-            job['status'] = 'done'
-            job['progress'] = 100
             job['message'] = (
                 f'جست‌وجوی قوانین تکمیل شد. '
-                f'{job["checked"]} سند بررسی شد و '
-                f'{job["found"]} نتیجه منطبق یافت شد.'
+                f'{len(results)} نتیجه منطبق یافت شد.'
+            )
+
+        else:
+
+            job['message'] = (
+                'در پایگاه داده قوانین هنوز '
+                'سند منطبقی وجود ندارد. '
+                'زیرساخت دیتابیس آماده است و '
+                'مرحله بعد واردکردن داده‌های '
+                'قوانین است.'
             )
 
     except Exception as e:
+
         job['status'] = 'error'
+
         job['message'] = (
-            'خطا در ارتباط با سامانه ملی قوانین و مقررات: '
+            'خطا در جست‌وجوی '
+            'پایگاه داده قوانین: '
             + str(e)
         )
 
 
 # =========================================================
-# WORKER
+# JUDGMENTS WORKER
 # =========================================================
 
 def worker(
@@ -1408,11 +1783,6 @@ def worker(
                 html
             )
 
-            # =================================================
-            # اگر صفحه آخر خالی برگشت، جست‌وجو موفق تمام شود
-            # و نتایج قبلی برای Word حفظ شوند.
-            # =================================================
-
             if not links:
 
                 job['completed_pages'] = page
@@ -1459,7 +1829,9 @@ def worker(
                 if url not in seen:
 
                     seen.add(url)
-                    new_links.append(url)
+                    new_links.append(
+                        url
+                    )
 
             for url in new_links:
 
@@ -1526,7 +1898,9 @@ def worker(
                 f'{pages_to_scan} بررسی شد.'
             )
 
-            time.sleep(0.15)
+            time.sleep(
+                0.15
+            )
 
         if job['cancel']:
 
@@ -1541,7 +1915,9 @@ def worker(
 
         elif job['status'] == 'running':
 
-            job['status'] = 'done'
+            job['status'] = (
+                'done'
+            )
 
             job['progress'] = 100
 
@@ -1551,15 +1927,16 @@ def worker(
 
     except Exception as e:
 
-        job['status'] = 'error'
-
-        job['message'] = (
-            'خطا در ارتباط با سامانه رسمی: '
-            + str(e)
+        job['status'] = (
+            'error'
         )
 
-
-# =========================================================
+        job['message'] = (
+            'خطا در ارتباط با '
+            'سامانه رسمی: '
+            + str(e)
+    )
+        # =========================================================
 # WORD
 # =========================================================
 
@@ -1627,10 +2004,17 @@ def make_doc(jid):
 
     doc = Document()
 
+    is_laws = (
+        job.get('source_id')
+        == QAVANIN_SOURCE_ID
+    )
+
     rtl(
         doc.add_heading(
             clean_xml_text(
-                'آرای قضایی یافت‌شده'
+                'قوانین و مقررات یافت‌شده'
+                if is_laws
+                else 'آرای قضایی یافت‌شده'
             ),
             0
         )
@@ -1668,7 +2052,9 @@ def make_doc(jid):
 
     if job['search_text']:
         places.append(
-            'متن رأی'
+            'متن قانون'
+            if is_laws
+            else 'متن رأی'
         )
 
     rtl(
@@ -1692,8 +2078,12 @@ def make_doc(jid):
     rtl(
         doc.add_paragraph(
             clean_xml_text(
-                f"آرای بررسی‌شده: "
-                f"{job['checked']}"
+                (
+                    'اسناد بررسی‌شده: '
+                    if is_laws
+                    else 'آرای بررسی‌شده: '
+                )
+                + f"{job['checked']}"
             )
         )
     )
@@ -1785,9 +2175,18 @@ def make_doc(jid):
         f'/tmp/{jid}.docx'
     )
 
-    doc.save(path)
+    doc.save(
+        path
+    )
 
     return path
+
+
+# =========================================================
+# INITIALIZE DATABASE
+# =========================================================
+
+init_laws_db()
 
 
 # =========================================================
@@ -1965,50 +2364,134 @@ def start():
 
 @app.post('/api/qavanin/search')
 def start_qavanin():
-    data = request.get_json(force=True)
 
-    query = (data.get('query') or '').strip()
-    search_title = bool(data.get('search_title', True))
-    search_text = bool(data.get('search_text', False))
+    data = request.get_json(
+        force=True
+    )
+
+    query = (
+        data.get('query')
+        or ''
+    ).strip()
+
+    search_title = bool(
+        data.get(
+            'search_title',
+            True
+        )
+    )
+
+    search_text = bool(
+        data.get(
+            'search_text',
+            False
+        )
+    )
 
     if not query:
-        return jsonify(error='عبارت جست‌وجو الزامی است'), 400
 
-    if not (search_title or search_text):
         return jsonify(
-            error='حداقل یکی از گزینه‌های عنوان یا متن قانون را انتخاب کنید.'
+            error='عبارت جست‌وجو الزامی است'
+        ), 400
+
+    if not (
+        search_title
+        or search_text
+    ):
+
+        return jsonify(
+            error=(
+                'حداقل یکی از گزینه‌های '
+                'عنوان یا متن قانون را انتخاب کنید.'
+            )
         ), 400
 
     try:
-        max_pages = int(data.get('max_pages', 1100))
+
+        max_pages = int(
+            data.get(
+                'max_pages',
+                1100
+            )
+        )
+
     except Exception:
+
         max_pages = 1100
 
-    max_pages = min(max(max_pages, 1), 1100)
+    max_pages = min(
+        max(
+            max_pages,
+            1
+        ),
+        1100
+    )
 
-    jid = str(uuid.uuid4())
+    jid = str(
+        uuid.uuid4()
+    )
 
     JOBS[jid] = {
-        'job_id': jid,
-        'source_id': QAVANIN_SOURCE_ID,
-        'source_name': QAVANIN_SOURCE_NAME,
-        'query': query,
-        'search_title': search_title,
-        'search_abstract': False,
-        'search_text': search_text,
-        'status': 'running',
-        'cancel': False,
-        'checked': 0,
-        'found': 0,
-        'failed_items': 0,
-        'current_page': 0,
-        'completed_pages': 0,
-        'total_pages': 0,
-        'site_total_pages': 0,
-        'official_results': None,
-        'progress': 0,
-        'results': [],
-        'message': 'جست‌وجوی قوانین آغاز شد.'
+
+        'job_id':
+            jid,
+
+        'source_id':
+            QAVANIN_SOURCE_ID,
+
+        'source_name':
+            QAVANIN_SOURCE_NAME,
+
+        'query':
+            query,
+
+        'search_title':
+            search_title,
+
+        'search_abstract':
+            False,
+
+        'search_text':
+            search_text,
+
+        'status':
+            'running',
+
+        'cancel':
+            False,
+
+        'checked':
+            0,
+
+        'found':
+            0,
+
+        'failed_items':
+            0,
+
+        'current_page':
+            0,
+
+        'completed_pages':
+            0,
+
+        'total_pages':
+            0,
+
+        'site_total_pages':
+            0,
+
+        'official_results':
+            None,
+
+        'progress':
+            0,
+
+        'results':
+            [],
+
+        'message':
+            'جست‌وجوی قوانین آغاز شد.'
     }
 
     threading.Thread(
@@ -2112,18 +2595,28 @@ def download(jid):
             404
         )
 
+    job = JOBS[jid]
+
+    filename = (
+        'national-laws-and-regulations.docx'
+        if job.get(
+            'source_id'
+        ) == QAVANIN_SOURCE_ID
+        else
+        'national-judicial-decisions.docx'
+    )
+
     return send_file(
         make_doc(jid),
 
         as_attachment=True,
 
-        download_name=(
-            'national-judicial-decisions.docx'
-        )
+        download_name=filename
     )
 
 
 if __name__ == '__main__':
+
     app.run(
         host='0.0.0.0',
         port=int(
@@ -2132,4 +2625,4 @@ if __name__ == '__main__':
                 5000
             )
         )
-    )
+)
