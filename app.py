@@ -902,6 +902,50 @@ def make_qavanin_session():
     return session
 
 
+
+
+def qavanin_get_with_retry(session, url, *, params=None, timeout=35, attempts=7):
+    """GET from Nezamat with bounded retry/backoff.
+
+    A catalogue page is never silently skipped: after all retries fail, the
+    exception is raised so the job is reported incomplete rather than done.
+    """
+    last_error = None
+    retry_statuses = {408, 425, 429, 500, 502, 503, 504}
+    for attempt in range(1, attempts + 1):
+        try:
+            response = session.get(
+                url, params=params, timeout=timeout, allow_redirects=True
+            )
+            if response.status_code in retry_statuses:
+                raise requests.exceptions.HTTPError(
+                    f'temporary HTTP {response.status_code}', response=response
+                )
+            response.raise_for_status()
+            return response
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.HTTPError,
+        ) as exc:
+            last_error = exc
+            # Do not retry ordinary permanent 4xx responses.
+            status = getattr(getattr(exc, 'response', None), 'status_code', None)
+            if status is not None and 400 <= status < 500 and status not in retry_statuses:
+                raise
+            if attempt >= attempts:
+                break
+            # Re-open the TCP connection on the next attempt.
+            try:
+                session.close()
+            except Exception:
+                pass
+            delay = min(8.0, 0.6 * (2 ** (attempt - 1)))
+            time.sleep(delay)
+    raise last_error or RuntimeError('ارتباط با نظامات برقرار نشد.')
+
+
 def qavanin_is_challenge(html):
     # Kept for compatibility with the old engine. Nezamat does not use
     # the ArvanCloud challenge that blocked qavanin.ir from Render.
@@ -962,8 +1006,9 @@ def qavanin_rest_page(session, query=None, page=1, per_page=100):
         'order': 'desc',
         '_fields': 'id,title,link'
     }
-    response = session.get(url, params=params, timeout=35, allow_redirects=True)
-    response.raise_for_status()
+    response = qavanin_get_with_retry(
+        session, url, params=params, timeout=35, attempts=7
+    )
     data = response.json()
 
     items = []
@@ -1082,12 +1127,9 @@ def _metadata_value(text, labels):
 
 
 def fetch_law(url, session):
-    response = session.get(
-        url,
-        timeout=35,
-        allow_redirects=True
+    response = qavanin_get_with_retry(
+        session, url, timeout=35, attempts=5
     )
-    response.raise_for_status()
     response.encoding = response.apparent_encoding or 'utf-8'
 
     if qavanin_is_challenge(response.text):
@@ -1292,6 +1334,17 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                 new_on_page += 1
                 job['checked'] += 1
 
+                # Publish item-level progress. The UI may poll less frequently,
+                # but this counter proves that every record in the 100-item
+                # catalogue page is visited, not merely record 100/200/300.
+                if catalog_total:
+                    job['progress'] = min(99, round(job['checked'] / catalog_total * 100, 1))
+                job['message'] = (
+                    f'در حال بررسی سند {job["checked"]:,} از '
+                    f'{catalog_total or "?"}؛ صفحه {page} از {pages_to_scan}؛ '
+                    f'{job["found"]} نتیجه منطبق'
+                )
+
                 # For title-only searches the REST index already gives us the
                 # title. Avoid downloading every full document; fetch only a
                 # title candidate. For text searches we must inspect the body.
@@ -1328,7 +1381,7 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
                     job['failed_items'] += 1
 
             job['completed_pages'] = page
-            job['progress'] = min(99, round(page / max(1, pages_to_scan) * 100, 1))
+            job['progress'] = min(99, round(job['checked'] / max(1, catalog_total) * 100, 1)) if catalog_total else min(99, round(page / max(1, pages_to_scan) * 100, 1))
             job['message'] = (
                 f'صفحه {page} بررسی شد؛ {job["checked"]} سند بررسی و '
                 f'{job["found"]} نتیجه منطبق یافت شده است.'
@@ -1336,7 +1389,8 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
 
             if new_on_page == 0:
                 break
-            time.sleep(0.05)
+            # Be polite to Nezamat and reduce long-run connection resets.
+            time.sleep(0.20)
 
         qnrm = norm(query)
 
@@ -1369,7 +1423,10 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
         job['message'] = 'ارتباط با منبع قوانین بیش از حد طول کشید. دوباره تلاش کنید.'
     except requests.exceptions.RequestException as e:
         job['status'] = 'error'
-        job['message'] = 'خطا در ارتباط با منبع قوانین: ' + str(e)
+        job['message'] = (
+            f'ارتباط با نظامات پس از چند تلاش قطع شد. جست‌وجو ناقص است؛ '
+            f'{job.get("checked", 0)} سند تا این نقطه بررسی شده است. خطا: {e}'
+        )
     except Exception as e:
         job['status'] = 'error'
         job['message'] = 'خطا در جست‌وجوی قوانین و مقررات: ' + str(e)
