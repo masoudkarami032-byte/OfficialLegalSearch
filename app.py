@@ -766,21 +766,11 @@ def extract_between(
     )
 
 
-def fetch_vote(
-    url,
-    session
-):
+def fetch_vote(url, session, *, job=None):
 
-    response = session.get(
-        url,
-        timeout=30
-    )
-
-    response.raise_for_status()
-
-    response.encoding = (
-        response.apparent_encoding
-        or 'utf-8'
+    response = judicial_request_with_retry(
+        session, 'GET', url, timeout=30, job=job,
+        context='دریافت متن رأی'
     )
 
     soup = BeautifulSoup(
@@ -1580,6 +1570,8 @@ def worker(
     job = JOBS[jid]
 
     session = make_session()
+    job['attempted'] = 0
+    consecutive_failures = 0
 
     try:
 
@@ -1715,19 +1707,7 @@ def worker(
             # =================================================
 
             if not links:
-
-                job['completed_pages'] = page
-                job['current_page'] = page
-                job['progress'] = 100
-                job['status'] = 'done'
-
-                job['message'] = (
-                    f'جست‌وجو تکمیل شد. '
-                    f'{job["checked"]} رأی بررسی شد و '
-                    f'{job["found"]} نتیجه منطبق یافت شد.'
-                )
-
-                return
+                break
 
             current_links = set(
                 links
@@ -1759,7 +1739,7 @@ def worker(
                 if job['cancel']:
                     break
 
-                job['checked'] += 1
+                job['attempted'] += 1
 
                 try:
 
@@ -1768,6 +1748,9 @@ def worker(
                         session,
                         job=job
                     )
+
+                    consecutive_failures = 0
+                    job['checked'] += 1
 
                     # Validate the official hit against the selected fields.
                     # In particular, a search such as «ماده ۱۷۴» must not accept
@@ -1786,11 +1769,23 @@ def worker(
                         job['results'].append(vote)
                         job['found'] = len(job['results'])
 
+                except requests.exceptions.RequestException as exc:
+                    job['failed_items'] += 1
+                    consecutive_failures += 1
+                    job['last_error'] = str(exc)
+                    app.logger.warning('Judgment download failed: %s: %s', url, exc)
+                    if consecutive_failures >= 3:
+                        raise RuntimeError(
+                            'دریافت سه رأی پیاپی ناموفق بود؛ جست‌وجو برای جلوگیری از تکرار خطا متوقف شد.'
+                        ) from exc
                 except Exception:
+                    app.logger.exception('Unexpected judgment processing error: %s', url)
+                    raise
 
-                    job[
-                        'failed_items'
-                    ] += 1
+                job['message'] = (
+                    f'{job["checked"]} رأی دریافت و بررسی شد؛ '
+                    f'{job["found"]} نتیجه منطبق و {job["failed_items"]} خطای دریافت.'
+                )
 
             job[
                 'completed_pages'
@@ -1830,26 +1825,25 @@ def worker(
             )
 
         elif job['status'] == 'running':
-
-            job['status'] = 'done'
-
-            job['progress'] = 100
-
+            missing = max(0, official_total - len(seen)) if official_total is not None else 0
+            limited = pages_to_scan < real_total_pages
+            incomplete = bool(job['failed_items'] or missing or limited)
+            job['status'] = 'error' if incomplete else 'done'
+            job['progress'] = min(job.get('progress', 0), 99) if incomplete else 100
+            prefix = 'جست‌وجو ناقص ماند.' if incomplete else 'جست‌وجو تکمیل شد.'
+            job['message'] = (
+                f'{prefix} {job["checked"]} رأی دریافت و بررسی شد؛ '
+                f'{job["found"]} نتیجه منطبق و {job["failed_items"]} خطای دریافت.'
+            )
             if official_total is not None:
-                job['message'] = (
-                    f'جست‌وجو تکمیل شد. سامانه رسمی {official_total} نتیجه اعلام کرد؛ '
-                    f'{job["found"]} رأی یکتا دریافت شد و '
-                    f'{job["failed_items"]} رأی با خطای دریافت مواجه شد.'
-                )
-            else:
-                job['message'] = 'جست‌وجو تکمیل شد.'
+                job['message'] += f' سامانه رسمی {official_total} نتیجه اعلام کرد؛ {missing} پیوند هنوز دریافت نشده است.'
 
     except Exception as e:
 
         job['status'] = 'error'
 
         job['message'] = (
-            f'ارتباط با سامانه رسمی پس از چند تلاش قطع شد. '
+            f'جست‌وجو به علت خطا متوقف شد. '
             f'نتایج جمع‌آوری‌شده حفظ شده‌اند؛ {job.get("checked", 0)} رأی بررسی و '
             f'{job.get("found", 0)} نتیجه منطبق تا این نقطه ثبت شده است. '
             f'خطا: {e}'
