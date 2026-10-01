@@ -470,6 +470,76 @@ def find_pagination_form(html):
 
 
 # =========================================================
+# JUDICIAL HTTP RETRY / BACKOFF
+# =========================================================
+
+def judicial_request_with_retry(
+    session,
+    method,
+    url,
+    *,
+    data=None,
+    timeout=45,
+    attempts=4,
+    job=None,
+    context='ارتباط با سامانه رسمی'
+):
+    """Request ara.jri.ac.ir with bounded retry/backoff.
+
+    Temporary timeouts/5xx/429 errors are retried instead of aborting the
+    entire judicial search. Existing collected results stay in JOBS.
+    """
+    last_error = None
+    retry_statuses = {408, 425, 429, 500, 502, 503, 504}
+
+    for attempt in range(1, attempts + 1):
+        try:
+            response = session.request(
+                method,
+                url,
+                data=data,
+                timeout=timeout,
+                allow_redirects=True
+            )
+
+            if response.status_code in retry_statuses:
+                raise requests.exceptions.HTTPError(
+                    f'temporary HTTP {response.status_code}',
+                    response=response
+                )
+
+            response.raise_for_status()
+            response.encoding = response.apparent_encoding or 'utf-8'
+            return response
+
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.HTTPError,
+        ) as exc:
+            last_error = exc
+            status = getattr(getattr(exc, 'response', None), 'status_code', None)
+
+            # Permanent ordinary 4xx errors should not be retried.
+            if status is not None and 400 <= status < 500 and status not in retry_statuses:
+                raise
+
+            if attempt >= attempts:
+                break
+
+            if job is not None:
+                job['message'] = (
+                    f'{context} پاسخ نداد؛ تلاش مجدد {attempt + 1} از {attempts}...'
+                )
+
+            # Exponential but bounded pause: 2, 4, 8 seconds.
+            time.sleep(min(8.0, 2.0 * (2 ** (attempt - 1))))
+
+    raise last_error or RuntimeError('ارتباط با سامانه رسمی برقرار نشد.')
+
+
+# =========================================================
 # INITIAL OFFICIAL SEARCH
 # =========================================================
 
@@ -481,16 +551,13 @@ def official_search(
     search_text
 ):
 
-    initial = session.get(
+    initial = judicial_request_with_retry(
+        session,
+        'GET',
         LIST,
-        timeout=30
-    )
-
-    initial.raise_for_status()
-
-    initial.encoding = (
-        initial.apparent_encoding
-        or 'utf-8'
+        timeout=45,
+        attempts=4,
+        context='دریافت صفحه جست‌وجوی سامانه رسمی'
     )
 
     form = find_search_form(
@@ -575,18 +642,14 @@ def official_search(
         ('SortDesc', 'True')
     )
 
-    response = session.post(
+    response = judicial_request_with_retry(
+        session,
+        'POST',
         LIST,
         data=payload,
-        timeout=30,
-        allow_redirects=True
-    )
-
-    response.raise_for_status()
-
-    response.encoding = (
-        response.apparent_encoding
-        or 'utf-8'
+        timeout=45,
+        attempts=4,
+        context='اجرای جست‌وجوی سامانه رسمی'
     )
 
     return response.text
@@ -599,7 +662,8 @@ def official_search(
 def get_page(
     session,
     previous_html,
-    page
+    page,
+    job=None
 ):
 
     form = find_pagination_form(
@@ -634,18 +698,15 @@ def get_page(
         ('PageSize', str(PAGE_SIZE))
     )
 
-    response = session.post(
+    response = judicial_request_with_retry(
+        session,
+        'POST',
         LIST,
         data=payload,
-        timeout=30,
-        allow_redirects=True
-    )
-
-    response.raise_for_status()
-
-    response.encoding = (
-        response.apparent_encoding
-        or 'utf-8'
+        timeout=45,
+        attempts=4,
+        job=job,
+        context=f'دریافت صفحه {page} از سامانه رسمی'
     )
 
     return response.text
@@ -1588,8 +1649,10 @@ def worker(
         # the selector exposes only 6 pages).  Estimate from the official hit count
         # and the number of links actually returned on page 1, then keep paging
         # until the official total is collected or the site stops yielding new hits.
-        if official_total and first_links:
-            estimated_pages = math.ceil(official_total / max(1, len(first_links)))
+        if official_total:
+            # The official list uses PAGE_SIZE=25. The site's PageNumbers selector
+            # may under-report, so use the official hit count as the stable basis.
+            estimated_pages = max(1, math.ceil(official_total / PAGE_SIZE))
             pages_to_scan = min(max(real_total_pages, estimated_pages), max_pages)
         else:
             pages_to_scan = min(real_total_pages, max_pages)
@@ -1636,7 +1699,8 @@ def worker(
                 html = get_page(
                     session,
                     current_html,
-                    page
+                    page,
+                    job=job
                 )
 
                 current_html = html
@@ -1701,7 +1765,8 @@ def worker(
 
                     vote = fetch_vote(
                         url,
-                        session
+                        session,
+                        job=job
                     )
 
                     # Validate the official hit against the selected fields.
@@ -1784,8 +1849,10 @@ def worker(
         job['status'] = 'error'
 
         job['message'] = (
-            'خطا در ارتباط با سامانه رسمی: '
-            + str(e)
+            f'ارتباط با سامانه رسمی پس از چند تلاش قطع شد. '
+            f'نتایج جمع‌آوری‌شده حفظ شده‌اند؛ {job.get("checked", 0)} رأی بررسی و '
+            f'{job.get("found", 0)} نتیجه منطبق تا این نقطه ثبت شده است. '
+            f'خطا: {e}'
         )
 
 
