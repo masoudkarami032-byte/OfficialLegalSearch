@@ -1138,19 +1138,27 @@ async function startSearch() {
             'none';
     }
 }
-    function checkStatus() {
+let activePoll = null;
+function checkStatus() {
+    const jid = currentJob;
 
-    if (!currentJob) {
+    if (!jid || activePoll === jid) {
         return;
     }
 
-    fetch(
+    activePoll = jid;
+    return fetch(
         '/api/status/' +
-        encodeURIComponent(currentJob)
+        encodeURIComponent(jid)
     )
 
     .then(async response => {
 
+        if (response.status === 404) {
+            const e = new Error('این جست‌وجو دیگر روی سرور موجود نیست. یک جست‌وجوی تازه شروع کنید.');
+            e.missing = true;
+            throw e;
+        }
         let data = {};
 
         try {
@@ -1179,7 +1187,7 @@ async function startSearch() {
 
     .then(data => {
 
-        if (!currentJob) {
+        if (jid !== currentJob) {
             return;
         }
 
@@ -1275,7 +1283,7 @@ async function startSearch() {
             if (
                 data.status === 'done'
                 ||
-                data.status === 'cancelled'
+                data.status === 'cancelled' || Number(data.found || 0) > 0
             ) {
 
                 downloadBtn.style.display =
@@ -1283,7 +1291,7 @@ async function startSearch() {
 
 
                 if (
-                    currentSource === 'judgments'
+                    data.status !== 'error' && currentSource === 'judgments'
                     && Number(data.found || 0) > 0
                 ) {
                     analysisBtn.style.display =
@@ -1306,6 +1314,11 @@ async function startSearch() {
 
     .catch(error => {
 
+        if (jid !== currentJob) return;
+        if (!error.missing) {
+            message.textContent = 'ارتباط برای دریافت وضعیت برقرار نشد؛ پیگیری خودکار ادامه دارد.';
+            return;
+        }
         stopTimer();
 
         message.textContent =
@@ -1322,7 +1335,7 @@ async function startSearch() {
 
         downloadBtn.style.display =
             'none';
-    });
+    }).finally(() => { if (activePoll === jid) activePoll = null; });
 }
 
 
