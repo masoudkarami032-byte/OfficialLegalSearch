@@ -1,4 +1,3 @@
-
 from flask import Flask, render_template, request, jsonify, send_file
 from bs4 import BeautifulSoup
 from docx import Document
@@ -479,15 +478,21 @@ from email.utils import parsedate_to_datetime
 _jri_lock = threading.Lock()
 _jri_next = 0.0
 
+_jri_cool_until = 0.0
+_jri_reason = ''
+_JRI_SPACING = 3
+
 def _jri_delay(header, attempt):
-    fallback = min(300, 60 * 2 ** (attempt - 1))
+    value = (header or '').strip()
+    if value.isascii() and value.isdigit():
+        return int(value), 'زمان اعلام‌شدهٔ پژوهشگاه'
     try:
-        return max(3, int(header))
-    except (ValueError, TypeError, OverflowError):
-        try:
-            return max(3, parsedate_to_datetime(header).timestamp() - time.time())
-        except (TypeError, ValueError, OverflowError, AttributeError, OSError):
-            return fallback
+        date = parsedate_to_datetime(value)
+        if date.tzinfo is not None:
+            return max(0, date.timestamp() - time.time()), 'زمان اعلام‌شدهٔ پژوهشگاه'
+    except (TypeError, ValueError, OverflowError, AttributeError, OSError):
+        pass
+    return min(300, _JRI_SPACING * 2 ** (attempt - 1)), 'مکث برنامه؛ پژوهشگاه زمان معتبری اعلام نکرده است'
 
 def _jri_slot(job):
     global _jri_next
@@ -496,12 +501,13 @@ def _jri_slot(job):
             raise InterruptedError('جست‌وجو لغو شد.')
         with _jri_lock:
             now = time.monotonic()
-            wait = _jri_next - now
+            wait = max(_jri_next, _jri_cool_until) - now
+            reason = _jri_reason if _jri_cool_until > now else None
             if wait <= 0:
-                _jri_next = now + 3
+                _jri_next = now + _JRI_SPACING
                 return
-        if job is not None and wait >= 3:
-            job['message'] = f'سامانه رسمی تعداد درخواست‌ها را محدود کرده است؛ {math.ceil(wait)} ثانیه تا تلاش بعدی.'
+        if job is not None and reason:
+            job['message'] = f'{reason}؛ {math.ceil(wait)} ثانیه تا تلاش بعدی.'
         time.sleep(min(wait, 1))
 
 def judicial_request_with_retry(
@@ -520,13 +526,17 @@ def judicial_request_with_retry(
     Temporary timeouts/5xx/429 errors are retried instead of aborting the
     entire judicial search. Existing collected results stay in JOBS.
     """
-    global _jri_next
+    global _jri_cool_until, _jri_reason
     last_error = None
     retry_statuses = {408, 425, 429, 500, 502, 503, 504}
 
-    for attempt in range(1, attempts + 1):
+    attempt = 1
+    rate_hits = 0
+    while True:
         try:
             _jri_slot(job)
+            if job is not None:
+                job['message'] = f'{context}؛ درخواست ارسال شد، در انتظار پاسخ سامانه.'
             response = session.request(
                 method,
                 url,
@@ -536,11 +546,14 @@ def judicial_request_with_retry(
             )
 
             if response.status_code == 429:
-                delay = _jri_delay(response.headers.get('Retry-After'), attempt)
+                rate_hits += 1
+                delay, reason = _jri_delay(response.headers.get('Retry-After'), rate_hits)
                 with _jri_lock:
-                    _jri_next = max(_jri_next, time.monotonic() + delay)
-                if attempt == attempts:
-                    raise RuntimeError(f'محدودیت تعداد درخواست‌های سامانه رسمی (HTTP 429) پس از {attempts} تلاش ادامه داشت.')
+                    deadline = time.monotonic() + delay
+                    if deadline >= _jri_cool_until:
+                        _jri_cool_until, _jri_reason = deadline, reason
+                if rate_hits >= 7:
+                    raise RuntimeError(f'محدودیت تعداد درخواست‌های سامانه رسمی (HTTP 429) پس از هفت پاسخ محدودیت ادامه داشت.')
                 continue
 
             if response.status_code in retry_statuses:
@@ -576,6 +589,7 @@ def judicial_request_with_retry(
 
             # Exponential but bounded pause: 2, 4, 8 seconds.
             time.sleep(min(8.0, 2.0 * (2 ** (attempt - 1))))
+            attempt += 1
 
     raise last_error or RuntimeError('ارتباط با سامانه رسمی برقرار نشد.')
 
@@ -589,7 +603,8 @@ def official_search(
     query,
     search_title,
     search_abstract,
-    search_text
+    search_text,
+    *, job=None
 ):
 
     initial = judicial_request_with_retry(
@@ -598,6 +613,7 @@ def official_search(
         LIST,
         timeout=45,
         attempts=4,
+        job=job,
         context='دریافت صفحه جست‌وجوی سامانه رسمی'
     )
 
@@ -690,6 +706,7 @@ def official_search(
         data=payload,
         timeout=45,
         attempts=4,
+        job=job,
         context='اجرای جست‌وجوی سامانه رسمی'
     )
 
@@ -1625,7 +1642,7 @@ def worker(
             query,
             search_title,
             search_abstract,
-            search_text
+            search_text, job=job
         )
 
         first_links = get_vote_links(
