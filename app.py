@@ -1734,7 +1734,7 @@ def worker(
                     seen.add(url)
                     new_links.append(url)
 
-            for url in new_links:
+            for new_index, url in enumerate(new_links, 1):
 
                 if job['cancel']:
                     break
@@ -1774,19 +1774,33 @@ def worker(
                     consecutive_failures += 1
                     job['last_error'] = str(exc)
                     app.logger.warning('Judgment download failed: %s: %s', url, exc)
-                    if consecutive_failures >= 3:
-                        raise RuntimeError(
-                            'دریافت سه رأی پیاپی ناموفق بود؛ جست‌وجو برای جلوگیری از تکرار خطا متوقف شد.'
-                        ) from exc
+                    code = getattr(getattr(exc, 'response', None), 'status_code', None)
+                    job['last_error'] = f'HTTP {code}' if code is not None else type(exc).__name__
+                    if consecutive_failures % 3 == 0:
+                        job['message'] = (
+                            f'دریافت چند رأی پیاپی ناموفق بود ({job["last_error"]}). '
+                            'پس از ده ثانیه، بررسی پیوندهای بعدی ادامه می‌یابد.'
+                        )
+                        for _ in range(10):
+                            if job['cancel']:
+                                break
+                            time.sleep(1)
                 except Exception:
                     app.logger.exception('Unexpected judgment processing error: %s', url)
                     raise
 
+                page_fraction = (page - 1 + (new_index / len(new_links))) / pages_to_scan
+                job['progress'] = min(99, round(100 * page_fraction, 1))
                 job['message'] = (
                     f'{job["checked"]} رأی دریافت و بررسی شد؛ '
                     f'{job["found"]} نتیجه منطبق و {job["failed_items"]} خطای دریافت.'
                 )
 
+                if job.get('last_error'):
+                    job['message'] += f' آخرین خطای دریافت: {job["last_error"]}.'
+
+            if job['cancel']:
+                break
             job[
                 'completed_pages'
             ] = page
@@ -1837,6 +1851,9 @@ def worker(
             )
             if official_total is not None:
                 job['message'] += f' سامانه رسمی {official_total} نتیجه اعلام کرد؛ {missing} پیوند هنوز دریافت نشده است.'
+
+            if job.get('last_error'):
+                job['message'] += f' آخرین خطای دریافت: {job["last_error"]}.'
 
     except Exception as e:
 
@@ -1941,6 +1958,11 @@ def make_doc(jid):
     if job['status'] == 'cancelled':
         rtl(doc.add_paragraph(clean_xml_text(
             'توجه: جست‌وجو پیش از تکمیل توسط کاربر متوقف شده است.'
+        )))
+
+    if job['status'] == 'error':
+        rtl(doc.add_paragraph(clean_xml_text(
+            'نتایج ناقص: ' + job.get('message', '')
         )))
 
     for i, item in enumerate(job['results'], 1):
