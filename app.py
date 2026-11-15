@@ -473,6 +473,36 @@ def find_pagination_form(html):
 # JUDICIAL HTTP RETRY / BACKOFF
 # =========================================================
 
+from email.utils import parsedate_to_datetime
+
+_jri_lock = threading.Lock()
+_jri_next = 0.0
+
+def _jri_delay(header, attempt):
+    fallback = min(300, 60 * 2 ** (attempt - 1))
+    try:
+        return max(3, int(header))
+    except (ValueError, TypeError, OverflowError):
+        try:
+            return max(3, parsedate_to_datetime(header).timestamp() - time.time())
+        except (TypeError, ValueError, OverflowError, AttributeError, OSError):
+            return fallback
+
+def _jri_slot(job):
+    global _jri_next
+    while True:
+        if job is not None and job.get('cancel'):
+            raise InterruptedError('جست‌وجو لغو شد.')
+        with _jri_lock:
+            now = time.monotonic()
+            wait = _jri_next - now
+            if wait <= 0:
+                _jri_next = now + 3
+                return
+        if job is not None and wait >= 3:
+            job['message'] = f'سامانه رسمی تعداد درخواست‌ها را محدود کرده است؛ {math.ceil(wait)} ثانیه تا تلاش بعدی.'
+        time.sleep(min(wait, 1))
+
 def judicial_request_with_retry(
     session,
     method,
@@ -489,11 +519,13 @@ def judicial_request_with_retry(
     Temporary timeouts/5xx/429 errors are retried instead of aborting the
     entire judicial search. Existing collected results stay in JOBS.
     """
+    global _jri_next
     last_error = None
     retry_statuses = {408, 425, 429, 500, 502, 503, 504}
 
     for attempt in range(1, attempts + 1):
         try:
+            _jri_slot(job)
             response = session.request(
                 method,
                 url,
@@ -501,6 +533,14 @@ def judicial_request_with_retry(
                 timeout=timeout,
                 allow_redirects=True
             )
+
+            if response.status_code == 429:
+                delay = _jri_delay(response.headers.get('Retry-After'), attempt)
+                with _jri_lock:
+                    _jri_next = max(_jri_next, time.monotonic() + delay)
+                if attempt == attempts:
+                    raise RuntimeError(f'محدودیت تعداد درخواست‌های سامانه رسمی (HTTP 429) پس از {attempts} تلاش ادامه داشت.')
+                continue
 
             if response.status_code in retry_statuses:
                 raise requests.exceptions.HTTPError(
@@ -1854,6 +1894,10 @@ def worker(
 
             if job.get('last_error'):
                 job['message'] += f' آخرین خطای دریافت: {job["last_error"]}.'
+
+    except InterruptedError:
+        job['status'] = 'cancelled'
+        job['message'] = 'جست‌وجو به درخواست کاربر متوقف شد.'
 
     except Exception as e:
 
