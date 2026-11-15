@@ -478,21 +478,15 @@ from email.utils import parsedate_to_datetime
 _jri_lock = threading.Lock()
 _jri_next = 0.0
 
-_jri_cool_until = 0.0
-_jri_reason = ''
-_JRI_SPACING = 3
-
 def _jri_delay(header, attempt):
-    value = (header or '').strip()
-    if value.isascii() and value.isdigit():
-        return int(value), 'زمان اعلام‌شدهٔ پژوهشگاه'
+    fallback = min(300, 60 * 2 ** (attempt - 1))
     try:
-        date = parsedate_to_datetime(value)
-        if date.tzinfo is not None:
-            return max(0, date.timestamp() - time.time()), 'زمان اعلام‌شدهٔ پژوهشگاه'
-    except (TypeError, ValueError, OverflowError, AttributeError, OSError):
-        pass
-    return min(300, _JRI_SPACING * 2 ** (attempt - 1)), 'مکث برنامه؛ پژوهشگاه زمان معتبری اعلام نکرده است'
+        return max(3, int(header))
+    except (ValueError, TypeError, OverflowError):
+        try:
+            return max(3, parsedate_to_datetime(header).timestamp() - time.time())
+        except (TypeError, ValueError, OverflowError, AttributeError, OSError):
+            return fallback
 
 def _jri_slot(job):
     global _jri_next
@@ -501,13 +495,12 @@ def _jri_slot(job):
             raise InterruptedError('جست‌وجو لغو شد.')
         with _jri_lock:
             now = time.monotonic()
-            wait = max(_jri_next, _jri_cool_until) - now
-            reason = _jri_reason if _jri_cool_until > now else None
+            wait = _jri_next - now
             if wait <= 0:
-                _jri_next = now + _JRI_SPACING
+                _jri_next = now + 3
                 return
-        if job is not None and reason:
-            job['message'] = f'{reason}؛ {math.ceil(wait)} ثانیه تا تلاش بعدی.'
+        if job is not None and wait >= 3:
+            job['message'] = f'سامانه رسمی تعداد درخواست‌ها را محدود کرده است؛ {math.ceil(wait)} ثانیه تا تلاش بعدی.'
         time.sleep(min(wait, 1))
 
 def judicial_request_with_retry(
@@ -526,7 +519,7 @@ def judicial_request_with_retry(
     Temporary timeouts/5xx/429 errors are retried instead of aborting the
     entire judicial search. Existing collected results stay in JOBS.
     """
-    global _jri_cool_until, _jri_reason
+    global _jri_next
     last_error = None
     retry_statuses = {408, 425, 429, 500, 502, 503, 504}
 
@@ -542,11 +535,9 @@ def judicial_request_with_retry(
             )
 
             if response.status_code == 429:
-                delay, reason = _jri_delay(response.headers.get('Retry-After'), attempt)
+                delay = _jri_delay(response.headers.get('Retry-After'), attempt)
                 with _jri_lock:
-                    deadline = time.monotonic() + delay
-                    if deadline >= _jri_cool_until:
-                        _jri_cool_until, _jri_reason = deadline, reason
+                    _jri_next = max(_jri_next, time.monotonic() + delay)
                 if attempt == attempts:
                     raise RuntimeError(f'محدودیت تعداد درخواست‌های سامانه رسمی (HTTP 429) پس از {attempts} تلاش ادامه داشت.')
                 continue
