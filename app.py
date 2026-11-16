@@ -127,66 +127,21 @@ def matches(text, query):
 
 
 
-def _norm_legal_text(s):
-    """Normalization used only for local validation of official judicial hits."""
-    s = norm(s)
-    s = fa_to_en(s)
-    s = s.replace('٫', '.').replace('٬', ',')
-    return s
-
-
-def _article_numbers_from_query(query):
-    """Return article numbers when query explicitly asks for ماده/مواد <number>."""
-    q = _norm_legal_text(query)
-    nums = []
-    for m in re.finditer(r'(?<!\w)(?:ماده|مواد)\s*(?:ی|ي)?\s*([0-9]+)', q):
-        nums.append(m.group(1))
-    return nums
-
+_JUDICIAL_DIGITS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 
 def legal_query_matches(text, query):
-    """
-    Validate official hits without confusing an article number with money, page
-    numbers, case numbers, etc.  For ordinary queries this falls back to the
-    original matcher.  For queries such as «ماده ۱۷۴», the number must occur as
-    a legal article reference: either directly after ماده, or inside a short
-    «مواد ...» list/range.
-    """
-    article_nums = _article_numbers_from_query(query)
-    if not article_nums:
-        return matches(text, query)
+    """Match whole, adjacent words within one selected judgment field."""
+    field = norm(text).translate(_JUDICIAL_DIGITS)
+    include, exclude = parse_query(query)
 
-    t = _norm_legal_text(text)
+    def present(clause):
+        phrase = norm(clause).translate(_JUDICIAL_DIGITS)
+        return bool(phrase and re.search(
+            r'(?<!\w)' + re.escape(phrase) + r'(?!\w)', field
+        ))
 
-    for num in article_nums:
-        n = re.escape(num)
-
-        # Direct forms: ماده 174 / ماده‌ی 174 / ماده شماره 174
-        direct = rf'(?<!\w)ماده\s*(?:ی\s*)?(?:شماره\s*)?{n}(?![0-9])'
-        if re.search(direct, t):
-            continue
-
-        # List/range forms: مواد 169، 170 ... 174 / مواد 168 تا 174
-        # Keep the window deliberately short so unrelated numbers later in the
-        # judgment (amounts, dates, pages) are not treated as article numbers.
-        ok = False
-        for m in re.finditer(r'(?<!\w)مواد(?P<tail>.{0,140})', t):
-            tail = m.group('tail')
-            # stop at a likely sentence boundary
-            tail = re.split(r'[.!؟?؛\n]', tail, maxsplit=1)[0]
-            if re.search(rf'(?<![0-9]){n}(?![0-9])', tail):
-                ok = True
-                break
-        if not ok:
-            return False
-
-    # Preserve NOT clauses, if the user supplied any.
-    _, exclude = parse_query(query)
-    for item in exclude:
-        if _norm_legal_text(item) in t:
-            return False
-
-    return True
+    return (bool(include) and all(map(present, include))
+            and not any(map(present, exclude)))
 
 # =========================================================
 # HTTP SESSION
