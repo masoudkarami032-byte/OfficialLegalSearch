@@ -13,6 +13,9 @@ import os
 import time
 import math
 import logging
+from functools import wraps
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from contextlib import closing
 
 from urllib.parse import urljoin, urlsplit
 from html import unescape
@@ -20,7 +23,7 @@ from html import unescape
 
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
-BUILD_VERSION = "2026-11-22-diagnostics-1"
+BUILD_VERSION = "2026-11-22-parallel-2"
 app.logger.info("JRI BUILD %s", BUILD_VERSION)
 
 BASE = 'https://ara.jri.ac.ir'
@@ -501,6 +504,44 @@ def _jri_slot(job):
             job['message'] = f'{reason}؛ {math.ceil(wait)} ثانیه تا تلاش بعدی.'
         time.sleep(min(wait, 1))
 
+# One process-wide limit, including searches from other tabs.
+_jri_capacity = threading.Condition()
+_jri_active = 0
+_jri_parallel_limit = 2
+
+
+def _jri_bounded_request(func):
+    @wraps(func)
+    def bounded(*args, **kwargs):
+        global _jri_active
+        job = kwargs.get('job')
+        with _jri_capacity:
+            while _jri_active >= _jri_parallel_limit:
+                if job is not None and job.get('cancel'):
+                    raise InterruptedError('جست‌وجو لغو شد.')
+                _jri_capacity.wait(timeout=0.25)
+            if job is not None and job.get('cancel'):
+                raise InterruptedError('جست‌وجو لغو شد.')
+            _jri_active += 1
+        try:
+            return func(*args, **kwargs)
+        finally:
+            with _jri_capacity:
+                _jri_active -= 1
+                _jri_capacity.notify_all()
+    return bounded
+
+
+def _jri_reduce_parallelism():
+    global _jri_parallel_limit
+    with _jri_capacity:
+        if _jri_parallel_limit != 1:
+            _jri_parallel_limit = 1
+            app.logger.warning("JRI CONCURRENCY limit=1 reason=HTTP429")
+        _jri_capacity.notify_all()
+
+
+@_jri_bounded_request
 def judicial_request_with_retry(
     session,
     method,
@@ -547,6 +588,7 @@ def judicial_request_with_retry(
                 request_id, response.status_code, time.monotonic() - started,
                 len(response.content))
             if response.status_code == 429:
+                _jri_reduce_parallelism()
                 rate_hits += 1
                 delay, reason = _jri_delay(response.headers.get('Retry-After'), rate_hits)
                 with _jri_lock:
@@ -1637,6 +1679,64 @@ def qavanin_worker(jid, query, max_pages, search_title, search_text):
 # WORKER
 # =========================================================
 
+class _VoteJobContext:
+    """Keep status messages shared; allow local cleanup to stop retries."""
+    def __init__(self, job, stop):
+        self.job, self.stop = job, stop
+
+    def get(self, key, default=None):
+        if key == 'cancel':
+            return self.stop.is_set() or self.job.get(key, default)
+        return self.job.get(key, default)
+
+    def __setitem__(self, key, value):
+        self.job[key] = value
+
+
+def _parallel_votes(urls, source_session, job):
+    # Only two outstanding futures. Cookies and headers are copied before
+    # submission; each fetch owns and closes its own requests.Session.
+    stop = threading.Event()
+    context = _VoteJobContext(job, stop)
+    cookies = source_session.cookies.copy()
+    headers = dict(source_session.headers)
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='jri-vote')
+    pending = {}
+    remaining = iter(urls)
+
+    def fetch_one(url):
+        if context.get('cancel'):
+            raise InterruptedError('جست‌وجو لغو شد.')
+        with make_session() as vote_session:
+            vote_session.headers.update(headers)
+            vote_session.cookies.update(cookies)
+            return fetch_vote(url, vote_session, job=context)
+
+    def fill():
+        while len(pending) < 2 and not context.get('cancel'):
+            url = next(remaining, None)
+            if url is None:
+                break
+            job['attempted'] += 1
+            pending[executor.submit(fetch_one, url)] = url
+
+    try:
+        fill()
+        while pending:
+            if context.get('cancel'):
+                return
+            done, _ = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+            for future in done:
+                url = pending.pop(future)
+                yield url, future
+            fill()
+    finally:
+        stop.set()
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def worker(
     jid,
     query,
@@ -1742,6 +1842,7 @@ def worker(
         )
 
         seen = set()
+        result_order = {}
 
         previous_links = None
 
@@ -1811,73 +1912,72 @@ def worker(
 
                 if url not in seen:
 
+                    result_order[url] = len(result_order)
                     seen.add(url)
                     new_links.append(url)
 
-            for new_index, url in enumerate(new_links, 1):
+            with closing(_parallel_votes(new_links, session, job)) as downloads:
+                for new_index, (url, future) in enumerate(downloads, 1):
 
-                if job['cancel']:
-                    break
+                    if job['cancel']:
+                        break
 
-                job['attempted'] += 1
+                    try:
 
-                try:
+                        vote = future.result()
 
-                    vote = fetch_vote(
-                        url,
-                        session,
-                        job=job
+                        consecutive_failures = 0
+                        job['checked'] += 1
+
+                        # Validate the official hit against the selected fields.
+                        # In particular, a search such as «ماده ۱۷۴» must not accept
+                        # a judgment merely because 174 appears in an amount, page
+                        # number, case number, etc.
+                        official_locations = []
+                        if search_title and legal_query_matches(vote.get('title', ''), query):
+                            official_locations.append('عنوان')
+                        if search_abstract and legal_query_matches(vote.get('abstract', ''), query):
+                            official_locations.append('پیام')
+                        if search_text and legal_query_matches(vote.get('body', ''), query):
+                            official_locations.append('متن رأی')
+
+                        if official_locations:
+                            vote['matched_in'] = official_locations
+                            job['results'].append(vote)
+                            job['results'].sort(key=lambda item: result_order[item['url']])
+                            job['found'] = len(job['results'])
+
+                    except requests.exceptions.RequestException as exc:
+                        job['failed_items'] += 1
+                        consecutive_failures += 1
+                        job['last_error'] = str(exc)
+                        app.logger.warning('Judgment download failed: %s: %s', url, exc)
+                        code = getattr(getattr(exc, 'response', None), 'status_code', None)
+                        job['last_error'] = f'HTTP {code}' if code is not None else type(exc).__name__
+                        if consecutive_failures % 3 == 0:
+                            job['message'] = (
+                                f'دریافت چند رأی پیاپی ناموفق بود ({job["last_error"]}). '
+                                'پس از ده ثانیه، بررسی پیوندهای بعدی ادامه می‌یابد.'
+                            )
+                            for _ in range(10):
+                                if job['cancel']:
+                                    break
+                                time.sleep(1)
+                    except InterruptedError:
+                        raise
+                    except Exception:
+                        app.logger.exception('Unexpected judgment processing error: %s', url)
+                        raise
+
+                    page_fraction = (page - 1 + (new_index / len(new_links))) / pages_to_scan
+                    job['progress'] = min(99, round(100 * page_fraction, 1))
+                    job['message'] = (
+                        f'{job["checked"]} رأی دریافت و بررسی شد؛ '
+                        f'{job["found"]} نتیجه منطبق و {job["failed_items"]} خطای دریافت.'
                     )
 
-                    consecutive_failures = 0
-                    job['checked'] += 1
-
-                    # Validate the official hit against the selected fields.
-                    # In particular, a search such as «ماده ۱۷۴» must not accept
-                    # a judgment merely because 174 appears in an amount, page
-                    # number, case number, etc.
-                    official_locations = []
-                    if search_title and legal_query_matches(vote.get('title', ''), query):
-                        official_locations.append('عنوان')
-                    if search_abstract and legal_query_matches(vote.get('abstract', ''), query):
-                        official_locations.append('پیام')
-                    if search_text and legal_query_matches(vote.get('body', ''), query):
-                        official_locations.append('متن رأی')
-
-                    if official_locations:
-                        vote['matched_in'] = official_locations
-                        job['results'].append(vote)
-                        job['found'] = len(job['results'])
-
-                except requests.exceptions.RequestException as exc:
-                    job['failed_items'] += 1
-                    consecutive_failures += 1
-                    job['last_error'] = str(exc)
-                    app.logger.warning('Judgment download failed: %s: %s', url, exc)
-                    code = getattr(getattr(exc, 'response', None), 'status_code', None)
-                    job['last_error'] = f'HTTP {code}' if code is not None else type(exc).__name__
-                    if consecutive_failures % 3 == 0:
-                        job['message'] = (
-                            f'دریافت چند رأی پیاپی ناموفق بود ({job["last_error"]}). '
-                            'پس از ده ثانیه، بررسی پیوندهای بعدی ادامه می‌یابد.'
-                        )
-                        for _ in range(10):
-                            if job['cancel']:
-                                break
-                            time.sleep(1)
-                except Exception:
-                    app.logger.exception('Unexpected judgment processing error: %s', url)
-                    raise
-
-                page_fraction = (page - 1 + (new_index / len(new_links))) / pages_to_scan
-                job['progress'] = min(99, round(100 * page_fraction, 1))
-                job['message'] = (
-                    f'{job["checked"]} رأی دریافت و بررسی شد؛ '
-                    f'{job["found"]} نتیجه منطبق و {job["failed_items"]} خطای دریافت.'
-                )
-
-                if job.get('last_error'):
-                    job['message'] += f' آخرین خطای دریافت: {job["last_error"]}.'
+                    if job.get('last_error'):
+                        job['message'] += f' آخرین خطای دریافت: {job["last_error"]}.'
 
             if job['cancel']:
                 break
