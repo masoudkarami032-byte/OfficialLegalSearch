@@ -12,12 +12,16 @@ import uuid
 import os
 import time
 import math
+import logging
 
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from html import unescape
 
 
 app = Flask(__name__)
+app.logger.setLevel(logging.INFO)
+BUILD_VERSION = "2026-11-22-diagnostics-1"
+app.logger.info("JRI BUILD %s", BUILD_VERSION)
 
 BASE = 'https://ara.jri.ac.ir'
 LIST = BASE + '/Judge/Index'
@@ -449,8 +453,37 @@ def _jri_delay(header, attempt):
         pass
     return min(300, _JRI_SPACING * 2 ** (attempt - 1)), 'مکث برنامه؛ پژوهشگاه زمان معتبری اعلام نکرده است'
 
+def _jri_pause(seconds, job):
+    deadline = time.monotonic() + seconds
+    while True:
+        if job is not None and job.get('cancel'):
+            raise InterruptedError('جست‌وجو لغو شد.')
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 1))
+
+
+def _jri_encoding(response):
+    # Prefer explicit charset; avoid statistical detection for valid UTF-8.
+    content_type = response.headers.get('Content-Type', '')
+    charset = re.search(r'charset\s*=\s*["\']?([^;\s"\']+)', content_type, re.I)
+    if charset:
+        try:
+            response.content.decode(charset.group(1), errors='strict')
+            return charset.group(1)
+        except (LookupError, UnicodeError):
+            pass
+    try:
+        response.content.decode('utf-8', errors='strict')
+        return 'utf-8'
+    except UnicodeError:
+        return response.apparent_encoding or 'utf-8'
+
+
 def _jri_slot(job):
     global _jri_next
+    started = time.monotonic()
     while True:
         if job is not None and job.get('cancel'):
             raise InterruptedError('جست‌وجو لغو شد.')
@@ -460,6 +493,9 @@ def _jri_slot(job):
             reason = _jri_reason if _jri_cool_until > now else None
             if wait <= 0:
                 _jri_next = now + _JRI_SPACING
+                waited = time.monotonic() - started
+                if waited >= 0.1:
+                    app.logger.info("JRI WAIT seconds=%.3f", waited)
                 return
         if job is not None and reason:
             job['message'] = f'{reason}؛ {math.ceil(wait)} ثانیه تا تلاش بعدی.'
@@ -487,11 +523,17 @@ def judicial_request_with_retry(
 
     attempt = 1
     rate_hits = 0
+    request_id = uuid.uuid4().hex[:10]
+    safe_path = urlsplit(url).path
     while True:
         try:
             _jri_slot(job)
             if job is not None:
                 job['message'] = f'{context}؛ درخواست ارسال شد، در انتظار پاسخ سامانه.'
+            started = time.monotonic()
+            app.logger.info(
+                "JRI REQUEST id=%s method=%s path=%s attempt=%s rate_hits=%s timeout=%s",
+                request_id, method, safe_path, attempt, rate_hits, timeout)
             response = session.request(
                 method,
                 url,
@@ -500,6 +542,10 @@ def judicial_request_with_retry(
                 allow_redirects=True
             )
 
+            app.logger.info(
+                "JRI RESPONSE id=%s status=%s seconds=%.3f bytes=%s",
+                request_id, response.status_code, time.monotonic() - started,
+                len(response.content))
             if response.status_code == 429:
                 rate_hits += 1
                 delay, reason = _jri_delay(response.headers.get('Retry-After'), rate_hits)
@@ -507,6 +553,10 @@ def judicial_request_with_retry(
                     deadline = time.monotonic() + delay
                     if deadline >= _jri_cool_until:
                         _jri_cool_until, _jri_reason = deadline, reason
+                app.logger.warning(
+                    "JRI RATE_LIMIT id=%s wait_seconds=%.3f source=%s hit=%s",
+                    request_id, delay, reason, rate_hits)
+                response.close()
                 if rate_hits >= 7:
                     raise RuntimeError(f'محدودیت تعداد درخواست‌های سامانه رسمی (HTTP 429) پس از هفت پاسخ محدودیت ادامه داشت.')
                 continue
@@ -518,7 +568,11 @@ def judicial_request_with_retry(
                 )
 
             response.raise_for_status()
-            response.encoding = response.apparent_encoding or 'utf-8'
+            decode_started = time.monotonic()
+            response.encoding = _jri_encoding(response)
+            app.logger.info("JRI DECODE id=%s encoding=%s seconds=%.3f",
+                            request_id, response.encoding,
+                            time.monotonic() - decode_started)
             return response
 
         except (
@@ -528,6 +582,9 @@ def judicial_request_with_retry(
             requests.exceptions.HTTPError,
         ) as exc:
             last_error = exc
+            app.logger.warning(
+                "JRI ERROR id=%s type=%s seconds=%.3f",
+                request_id, type(exc).__name__, time.monotonic() - started)
             status = getattr(getattr(exc, 'response', None), 'status_code', None)
 
             # Permanent ordinary 4xx errors should not be retried.
@@ -543,7 +600,9 @@ def judicial_request_with_retry(
                 )
 
             # Exponential but bounded pause: 2, 4, 8 seconds.
-            time.sleep(min(8.0, 2.0 * (2 ** (attempt - 1))))
+            pause = min(8.0, 2.0 * (2 ** (attempt - 1)))
+            app.logger.info("JRI RETRY id=%s wait_seconds=%.3f", request_id, pause)
+            _jri_pause(pause, job)
             attempt += 1
 
     raise last_error or RuntimeError('ارتباط با سامانه رسمی برقرار نشد.')
@@ -781,10 +840,13 @@ def extract_between(
 
 def fetch_vote(url, session, *, job=None):
 
+    vote_started = time.monotonic()
+
     response = judicial_request_with_retry(
         session, 'GET', url, timeout=30, job=job,
         context='دریافت متن رأی'
     )
+    parse_started = time.monotonic()
 
     soup = BeautifulSoup(
         response.text,
@@ -908,6 +970,10 @@ def fetch_vote(url, session, *, job=None):
         body[:footer_position]
     )
 
+    app.logger.info(
+        "JRI VOTE path=%s parse_seconds=%.3f total_seconds=%.3f chars=%s",
+        urlsplit(url).path, time.monotonic() - parse_started,
+        time.monotonic() - vote_started, len(body))
     return {
         'url': url,
         'title': title,
@@ -1583,6 +1649,7 @@ def worker(
     job = JOBS[jid]
 
     session = make_session()
+    app.logger.info('JRI JOB_START id=%s build=%s', jid, BUILD_VERSION)
     job['attempted'] = 0
     consecutive_failures = 0
 
@@ -1882,6 +1949,12 @@ def worker(
             f'{job.get("found", 0)} نتیجه منطبق تا این نقطه ثبت شده است. '
             f'خطا: {e}'
         )
+
+    finally:
+        session.close()
+        app.logger.info("JRI JOB_END id=%s status=%s checked=%s found=%s failed=%s",
+                        jid, job.get('status'), job.get('checked'),
+                        job.get('found'), job.get('failed_items'))
 
 
 # =========================================================
